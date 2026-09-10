@@ -19,10 +19,8 @@
 /installer/spec/
 /installer/staging/
 
-# Keep only the distributable Windows builds from the output directory
-/output_exe/*
-!/output_exe/!A5ImageViewer.exe
-!/output_exe/A5ImageViewer-Setup-*.exe
+# Generated distributable Windows builds
+/output_exe/
 
 # Editor and operating-system files
 .idea/

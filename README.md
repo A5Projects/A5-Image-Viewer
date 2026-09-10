@@ -3,75 +3,150 @@
 A fast, Windows-oriented image browser, fullscreen viewer, and lightweight
 editor written in Python with PyQt6 and Pillow.
 
-1. The leading directive was not a vast amount of features, but stability and responsivness, even under heavy system, GPU and Vram load (local AI, games - My previous fav. was freezing and crashing).  The Features grew nonetheless, into a personal best of, but only under that guiding rule. 
-- VERY low/no Vram use (that was paramount throughout). It works fast and flawless, even if ComfyUI uses 100%Vram and 50% RAM!
-- Minimum needed dependencies. For size and stability reasons. (If in doubt, fancy feature ideas were dropped, example more image adjusting options) 
-- Functional UI. Three UI modes (Dark, medium, light).
-- - THE UI, the shortkeys and what is and isn't available. It is very much MY best of. Focus fast, one button workflow.
-- Adjustable performance (cpu use, ram use) for thumbnail mode. Without going crazy on settings. 
-- Very basic file manager options(rename, new folder, open in explorer)
-- - Basic but fast copying options: copy to (folder), move to, (with remembered paths), with visual overwrite/renaming dialog, including auto renaming options. Also copy/cut/paste, drag and drop of files and image)
-- Single button shortcuts. Visible in context menu.
-- very fast, efficient Crop Board, to crop many images fast and efficient. (under the hood and in UI. Which is VERY much based on my priorities).
-- Image adjustments in size, and visuals, with simple functional UI, some QOL options like maiantaining settings) CPU based.
-Batch conversion and batch rename of images.
-- QoL features like optional automatic, renaming and numbering options, for crop and image adjust.
+## Design priorities
 
-2. since i use Windows, That was priority. no precaution was taken to make it linux compatible, despite the python base.
-- But it should not be the biggest job in the world to make that work for most features.
+The leading directive was not a vast number of features, but stability and
+responsiveness, even under heavy system, GPU, and VRAM load from local AI or
+games. My previous favorite viewer was freezing and crashing. The features grew
+nonetheless into a personal best-of, but only under that guiding rule.
 
-### Quick start (Windows):
+- Very low or no VRAM use was paramount throughout. It works quickly and
+  flawlessly for me even while ComfyUI uses 100% of the VRAM and 50% of RAM.
+- The minimum necessary dependencies, for size and stability. When in doubt,
+  fancy feature ideas were dropped, such as more image-adjustment options.
+- A functional UI with three themes: Dark, Medium Dark, and Light.
+- The UI, shortcuts, and choice of available features are very much my personal
+  best-of, focused on fast, one-button workflows.
+- Adjustable CPU and RAM use for thumbnail mode, without going overboard on
+  settings.
+- Basic file-manager options: rename, create a folder, and open in Explorer.
+- Fast copying options: Copy To, Move To, remembered paths, visual conflict and
+  renaming dialogs, automatic renaming, clipboard operations, and drag and drop.
+- Single-key shortcuts, shown in the context menus.
+- A fast and efficient Crop Board for cropping many images quickly. Its internal
+  behavior and UI are very much based on my priorities.
+- CPU-based image adjustments for size and appearance, with a simple functional
+  UI and conveniences such as preserving settings between images.
+- Batch conversion and batch renaming of images.
+- Optional automatic naming and numbering for Crop Board and Image Adjust.
 
-1. A5ImageViewer-Portable-1.0.0.exe to run it locally, as completely portable version without any installation or ANY system changes. It will create the config.json next to it, containing settings, folder history. But nothing else.
-2. A5ImageViewer-Setup-1.0.0.exe For a classic installer, integrating (optionally) better into windows as app.
-3. Python based: Use run.bat, it sets all up (python environment and dependencies) and starts it. It just starts it after that. This DOES require a system python 3 on path to create the .venv environment on first run
+Because I use Windows, it was the priority. No precautions were taken to make
+the application Linux-compatible despite its Python base, although making most
+features work there should not be an enormous job.
 
-   The .exe versions are up to date. But can be created too. (See extended instructions below).
+## Quick start (Windows)
 
-### Some screenshots, all should be very self explanatory. For shortkeys check the context menu:
-Should this ever get any attention i might bother with a documentation, but if you used a image viewer before, there should be no issues.
+Download the current files from the
+[latest GitHub release](https://github.com/A5Projects/A5-Image-Viewer/releases/latest):
 
-<img width="930" height="640" alt="A5viewer-main-1" src="https://github.com/user-attachments/assets/14fff3f1-9cf7-4db5-8501-9e4719f89133" />
-<img width="700" height="450" alt="A5viewerImg adjust-1" src="https://github.com/user-attachments/assets/25185f12-ec5c-4368-8480-b4397875b543" />
-<img width="400" height="300" alt="A5Imagev-Cropboard1" src="https://github.com/user-attachments/assets/3859876b-8839-4f0c-ac84-5fe63f8ee458" />
+1. Use `A5ImageViewer-Portable-1.0.0.exe` as a completely portable version with
+   no installation or system changes. It creates `config.json` beside the EXE
+   for settings and folder history, but creates nothing else.
+2. Use `A5ImageViewer-Setup-1.0.0.exe` for a classic installer with optional
+   Windows application and file-association integration.
+3. To run from source, use `run.bat`. It creates the Python environment and
+   installs dependencies on its first run, then starts the application. This
+   requires Python 3 on `PATH`.
 
-### Last personal note and disclaimer: This was created over a LONG time, using ChatGPT and Codex. It will also be maintained on gihhub using it. But changes will only ever come from me, there is no automated development running. 
+The executable builds are current as of the tagged release. They can also be
+built locally using the instructions below.
 
-It was personal project because i started using local AI stuff and my image viewer of choice was crashing and freezing like crazy. 
-It was only intended as a personal image viewer and editor best-of for my needs.  But it has grown in features to a real alternative. 
-### I have NO intention, now or in future,  to rival the feature and option richness of bigger projects like  Faststone, XNView, Irfan, ACDSee and similar. 
-These amazing and professional projects WILL remain far bigger, more complete and more flexible packages. This is basically a very personal best-of inspired by those optimized for stability over EVERYTHING else. 
+## Screenshots
 
-However it is a ongoing project and sensible ideas and additions, as well as fixes are on the table.
-All below here wil likely be automated maintained and extended. 
+The interface should be familiar to anyone who has used an image viewer. Check
+the context menus for the available shortcuts.
 
+<img width="930" height="640" alt="A5 Image Viewer main window" src="https://github.com/user-attachments/assets/14fff3f1-9cf7-4db5-8501-9e4719f89133" />
+<img width="700" height="450" alt="A5 Image Viewer adjustment board" src="https://github.com/user-attachments/assets/25185f12-ec5c-4368-8480-b4397875b543" />
+<img width="400" height="300" alt="A5 Image Viewer crop board" src="https://github.com/user-attachments/assets/3859876b-8839-4f0c-ac84-5fe63f8ee458" />
 
-# 2. Installation - extended
+## Personal note and disclaimer
 
-## Run from source
+This was created over a long time using ChatGPT and Codex. It will also be
+maintained on GitHub with their help, but changes will only ever come from me;
+there is no automated development running.
 
-~~~powershell
+It began as a personal project because I started using local AI tools and my
+image viewer of choice was crashing and freezing constantly. It was intended as
+a personal image-viewer and editor best-of for my needs, but it has grown into a
+real alternative.
+
+I have no intention, now or in the future, of rivaling the feature and option
+richness of larger projects such as FastStone, XnView, IrfanView, ACDSee, and
+similar applications. These amazing professional projects will remain much
+larger, more complete, and more flexible packages. This is essentially a very
+personal best-of inspired by them and optimized for stability above everything
+else.
+
+It is an ongoing project, and sensible ideas, additions, and fixes are welcome.
+The technical documentation below will likely be maintained and extended with
+AI assistance.
+
+## Installation
+
+### Portable build
+
+Download `A5ImageViewer-Portable-1.0.0.exe` from the latest release and place it
+in any writable folder. No Python installation is required. The application
+stores its `config.json` in that folder.
+
+### Installer
+
+Download and run `A5ImageViewer-Setup-1.0.0.exe`. The destination folder is
+selectable. Windows integration and supported image-file associations are
+optional installer choices. No Python installation is required.
+
+The distributed executables are currently unsigned. Windows SmartScreen or
+some antivirus products may therefore show a warning, particularly for the
+single-file portable build. Download builds only from this repository's
+Releases page.
+
+### Run from source
+
+The convenient launcher creates `.venv`, installs the runtime dependencies, and
+starts the application:
+
+```powershell
+.\run.bat
+```
+
+The equivalent manual commands are:
+
+```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe main.py
-~~~
+```
 
-Application preferences and recent paths are stored in the local
-**config.json**. That file is intentionally not tracked.
+Application preferences and recent paths are stored in the local `config.json`.
+That file is intentionally not tracked.
 
-## Windows builds
+## Building Windows executables
 
-- **output_exe/!A5ImageViewer.exe**: portable standalone build
-- **output_exe/A5ImageViewer-Setup-1.0.0.exe**: installer with optional Windows
-  file-association integration
+Run `build-exe.bat` for the portable executable or `build-installer.bat` for the
+installer. On first use, either script creates the root `.venv` and installs the
+dependencies in `requirements-build.txt`. The installer build also requires
+Inno Setup 6 or 7.
 
-Run **build-exe.bat** for the portable executable or **build-installer.bat**
-for the installer. On first use, either script creates the root **.venv** and
-installs the dependencies in **requirements-build.txt**. The installer build
-also requires Inno Setup 6 or 7.
+Build results are written to the local `output_exe` directory. That directory is
+ignored by Git; distributable builds belong on the GitHub Releases page.
 
-The build scripts invoke PyInstaller directly. The local **PyToExe** directory
-and third-party conversion frontend are not used or included.
+The build scripts invoke PyInstaller directly. The local `PyToExe` directory and
+third-party conversion frontend are not used or included.
+
+## Testing
+
+The test suite uses Python's standard `unittest` runner:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+## Feedback
+
+Use the GitHub Issues page for bug reports and focused feature suggestions.
+Please include the Windows version, the build type, and clear reproduction steps
+for bugs.
 
 ## License
 
