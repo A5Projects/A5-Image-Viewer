@@ -20,9 +20,13 @@ Application preferences and recent paths are stored in the local
 - **output_exe/A5ImageViewer-Setup-1.0.0.exe**: installer with optional Windows
   file-association integration
 
-The local **PyToExe** build environment and third-party conversion frontend are
-not part of this repository. The project build scripts and Inno Setup sources
-remain included.
+Run **build-exe.bat** for the portable executable or **build-installer.bat**
+for the installer. On first use, either script creates the root **.venv** and
+installs the dependencies in **requirements-build.txt**. The installer build
+also requires Inno Setup 6 or 7.
+
+The build scripts invoke PyInstaller directly. The local **PyToExe** directory
+and third-party conversion frontend are not used or included.
 
 ## License
 

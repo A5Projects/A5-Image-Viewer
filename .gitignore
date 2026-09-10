@@ -13,6 +13,7 @@
 /backup/
 
 # Generated installer and PyInstaller work trees
+/build/
 /installer/build/
 /installer/output/
 /installer/spec/

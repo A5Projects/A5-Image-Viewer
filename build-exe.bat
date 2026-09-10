@@ -1,26 +1,27 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 
 set "ROOT_DIR=%~dp0"
-set "BUILD_PYTHON=%ROOT_DIR%PyToExe\.venv\Scripts\python.exe"
-set "PYINSTALLER_MODULE=%ROOT_DIR%PyToExe\.venv\Lib\site-packages\PyInstaller\__init__.py"
+set "BUILD_ENV_SCRIPT=%ROOT_DIR%prepare-build-env.bat"
 set "ENTRY_POINT=%ROOT_DIR%main.py"
 set "ICON_FILE=%ROOT_DIR%A5ImageViewer.ico"
 set "VERSION_FILE=%ROOT_DIR%installer\A5ImageViewer.version.txt"
 set "OUTPUT_DIR=%ROOT_DIR%output_exe"
-set "WORK_DIR=%ROOT_DIR%PyToExe\build"
-set "SPEC_DIR=%ROOT_DIR%PyToExe"
+set "WORK_DIR=%ROOT_DIR%build\standalone"
+set "SPEC_DIR=%ROOT_DIR%build\spec"
 set "EXE_FILE=%OUTPUT_DIR%\!A5ImageViewer.exe"
 
-if not exist "%BUILD_PYTHON%" (
-    set "BUILD_ERROR=The build environment was not found at: %BUILD_PYTHON%"
+if not exist "%BUILD_ENV_SCRIPT%" (
+    set "BUILD_ERROR=The build environment helper was not found at: %BUILD_ENV_SCRIPT%"
     goto :failure
 )
 
-if not exist "%PYINSTALLER_MODULE%" (
-    set "BUILD_ERROR=PyInstaller is not installed in: %ROOT_DIR%PyToExe\.venv"
+call "%BUILD_ENV_SCRIPT%"
+if errorlevel 1 (
+    set "BUILD_ERROR=The project build environment could not be prepared."
     goto :failure
 )
+set "BUILD_PYTHON=%A5_BUILD_PYTHON%"
 
 if not exist "%ENTRY_POINT%" (
     set "BUILD_ERROR=Application entry point was not found at: %ENTRY_POINT%"

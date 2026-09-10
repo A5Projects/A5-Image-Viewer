@@ -5,8 +5,12 @@ Run build-installer.bat from the workspace root. It creates a PyInstaller
 onedir build and compiles it with Inno Setup.
 
 Build-time requirements:
-- PyToExe\.venv with PyInstaller installed
+- Python 3 available through py.exe or python.exe
 - Inno Setup 7 or 6 (ISCC.exe)
+
+The build script creates or reuses .venv in the workspace root and installs
+requirements-build.txt when Pillow, PyQt6, or PyInstaller is missing. It does
+not use auto-py-to-exe or the local PyToExe directory.
 
 Output:
 output_exe\A5ImageViewer-Setup-1.0.0.exe
