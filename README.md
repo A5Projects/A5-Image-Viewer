@@ -26,4 +26,8 @@ remain included.
 
 ## License
 
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+Copyright (C) 2026 A5Projects.
+
+Licensed under the GNU General Public License version 3. This keeps distributed
+versions of the application and their source available under the same terms as
+the GPL edition of PyQt6. See [LICENSE](LICENSE).
