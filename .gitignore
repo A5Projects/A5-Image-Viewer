@@ -1,0 +1,32 @@
+# Personal application state
+/config.json
+/output_exe/config.json
+
+# Python environments and caches
+/.venv/
+**/__pycache__/
+*.py[cod]
+
+# Local tools and backups
+/.agents/
+/PyToExe/
+/backup/
+
+# Generated installer and PyInstaller work trees
+/installer/build/
+/installer/output/
+/installer/spec/
+/installer/staging/
+
+# Keep only the distributable Windows builds from the output directory
+/output_exe/*
+!/output_exe/!A5ImageViewer.exe
+!/output_exe/A5ImageViewer-Setup-*.exe
+
+# Editor and operating-system files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+*.lnk
+*.log
