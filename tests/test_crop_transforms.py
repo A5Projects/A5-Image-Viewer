@@ -6,7 +6,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PyQt6.QtCore import QPointF, Qt, QTimer
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMessageBox, QGraphicsRectItem
 
@@ -50,6 +50,25 @@ class CropTransformTests(unittest.TestCase):
             (6, 4),
         )
         self.assertFalse(self.board.has_unsaved_changes())
+
+    def test_ctrl_a_selects_full_current_image_and_replaces_selection(self):
+        self.board.show()
+        self.board.activateWindow()
+        self.board.view.setFocus()
+        self.app.processEvents()
+        QTest.keyClick(self.board.view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        selection = self.board.view.selection_rect_item
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.rect(), QRectF(0, 0, 6, 4))
+        self.assertTrue(selection.isSelected())
+        self.assertTrue(selection.handles)
+        self.assertFalse(self.board.has_unsaved_changes())
+        selection.setRect(QRectF(1, 1, 2, 2))
+        QTest.keyClick(self.board.view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.board.view.selection_rect_item.rect(), QRectF(0, 0, 6, 4))
+        self.board.rotate_right()
+        QTest.keyClick(self.board.view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.board.view.selection_rect_item.rect(), QRectF(0, 0, 4, 6))
 
     def test_transformed_result_uses_existing_save_path(self):
         self.board.rotate_right()

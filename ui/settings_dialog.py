@@ -5,7 +5,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_ops import (RESOURCE_PROFILES, get_thumbnail_size, set_thumbnail_size,
                             get_startup_behavior, set_startup_behavior,
                             get_resource_settings, set_resource_settings,
-                            get_ui_theme, set_ui_theme)
+                            get_ui_theme, set_ui_theme,
+                            get_viewer_default_mode, set_viewer_default_mode)
 from ui.theme import THEME_NAMES
 
 class SettingsDialog(QDialog):
@@ -40,6 +41,12 @@ class SettingsDialog(QDialog):
             self.theme_combo.addItem(label, name)
         self.theme_combo.setCurrentIndex(self.theme_combo.findData(get_ui_theme()))
         form_layout.addRow("Theme:", self.theme_combo)
+        self.viewer_mode_combo = QComboBox()
+        self.viewer_mode_combo.addItem("Fullscreen", "fullscreen")
+        self.viewer_mode_combo.addItem("Windowed", "windowed")
+        self.viewer_mode_combo.addItem("Remember last used", "last_used")
+        self.viewer_mode_combo.setCurrentIndex(self.viewer_mode_combo.findData(get_viewer_default_mode()))
+        form_layout.addRow("Default image view:", self.viewer_mode_combo)
         layout.addWidget(general_group)
         
         # Thumbnail Settings
@@ -163,6 +170,7 @@ class SettingsDialog(QDialog):
         set_thumbnail_size(new_size)
         set_startup_behavior(self.startup_combo.currentData())
         set_ui_theme(new_theme)
+        set_viewer_default_mode(self.viewer_mode_combo.currentData())
         if self.resource_combo.currentData() == "custom":
             custom_workers = self.worker_spin.value()
             custom_cache = self.cache_spin.value()

@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QStyle,
 )
 from utils.file_ops import add_recent_folder
 
@@ -301,7 +302,11 @@ class TransferConflictDialog(QDialog):
     def _set_file_panel(self, path, path_label, preview_label, details_label,
                         size, modified):
         path_label.setText(path)
-        pixmap, dimensions = read_preview(path, QSize(340, 280))
+        if os.path.splitext(path)[1].lower() == ".txt":
+            pixmap = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon).pixmap(64, 64)
+            dimensions = QSize()
+        else:
+            pixmap, dimensions = read_preview(path, QSize(340, 280))
         if pixmap.isNull():
             preview_label.setPixmap(QPixmap())
             preview_label.setText("Preview unavailable")

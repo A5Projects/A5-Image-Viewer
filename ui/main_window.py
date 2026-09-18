@@ -385,12 +385,14 @@ class MainWindow(QMainWindow):
         self.show_pdfs_action = QCheckBox("PDFs")
         self.show_pdfs_action.setChecked(True)
         self.show_videos_action = QCheckBox("Videos")
+        self.show_text_action = QCheckBox("Text files (.txt)")
         self.show_folders_action = QCheckBox("Folders")
         self.show_folders_action.setChecked(True)
         for option in (
             self.show_images_action,
             self.show_pdfs_action,
             self.show_videos_action,
+            self.show_text_action,
             self.show_folders_action,
         ):
             option.toggled.connect(self.on_show_options_changed)
@@ -541,6 +543,7 @@ class MainWindow(QMainWindow):
         self.show_images = True
         self.show_pdfs = True
         self.show_videos = False
+        self.show_text = False
         self.show_folders = True
         self.fullscreen_start_path = None
         self.current_image_path = None
@@ -1305,6 +1308,8 @@ class MainWindow(QMainWindow):
         copied_paths = []
         failed_paths = list(plan.missing_sources)
         cancelled = False
+        fullscreen_source = None
+        fullscreen_target = None
         video_decoder_stopped = self.pause_file_access(
             [item.source for item in resolved_transfers]
         ) if move_files else False
@@ -1349,16 +1354,34 @@ class MainWindow(QMainWindow):
                     elif result is False:
                         failed_paths.append(item.source)
 
+            if move_files and self.fullscreen_viewer.isVisible():
+                path_key = lambda path: os.path.normcase(os.path.abspath(path))
+                moved_keys = {path_key(path) for path in successful_sources}
+                displayed = self.fullscreen_viewer.current_image_path
+                if displayed and path_key(displayed) in moved_keys:
+                    fullscreen_source = displayed
+                    visible_paths = self.fullscreen_image_paths()
+                    position = next(
+                        (i for i, path in enumerate(visible_paths)
+                         if path_key(path) == path_key(displayed)), None,
+                    )
+                    if position is not None:
+                        candidates = visible_paths[position + 1:] + list(reversed(visible_paths[:position]))
+                        fullscreen_target = next(
+                            (path for path in candidates
+                             if path_key(path) not in moved_keys and os.path.isfile(path)), None,
+                        )
+
             keep_selection_path = self.current_image_path or (
                 copied_paths[0] if copied_paths else None
             )
             current_folder = (
-                os.path.abspath(self.current_folder_path)
+                os.path.normcase(os.path.abspath(self.current_folder_path))
                 if self.current_folder_path else ""
             )
-            destination = os.path.abspath(plan.job.destination)
+            destination = os.path.normcase(os.path.abspath(plan.job.destination))
             source_folders = {
-                os.path.abspath(os.path.dirname(path))
+                os.path.normcase(os.path.abspath(os.path.dirname(path)))
                 for path in successful_sources
             }
             if copied_paths and current_folder == destination:
@@ -1369,7 +1392,7 @@ class MainWindow(QMainWindow):
             if move_files and successful_sources and current_folder in source_folders:
                 self.remove_thumbnail_paths(
                     successful_sources,
-                    keep_selection_path=self.current_image_path,
+                    keep_selection_path=fullscreen_target or self.current_image_path,
                 )
         finally:
             if move_files:
@@ -1387,21 +1410,25 @@ class MainWindow(QMainWindow):
             "successful_sources": successful_sources,
             "failed": failed_paths,
             "cancelled": cancelled,
+            "fullscreen_source": fullscreen_source,
+            "fullscreen_target": fullscreen_target,
         }
 
     def on_queued_transfer_finished(self, job, result):
         if not job.move_files:
             return
-        successful_sources = set(result.get("successful_sources", []))
-        fullscreen_source = job.context.get("fullscreen_source")
-        if not fullscreen_source or fullscreen_source not in successful_sources:
+        path_key = lambda path: os.path.normcase(os.path.abspath(path))
+        successful_sources = {path_key(path) for path in result.get("successful_sources", [])}
+        fullscreen_source = result.get("fullscreen_source")
+        if not fullscreen_source or path_key(fullscreen_source) not in successful_sources:
             return
         if not self.fullscreen_viewer.isVisible():
             return
-        if self.fullscreen_viewer.current_image_path != fullscreen_source:
+        displayed = self.fullscreen_viewer.current_image_path
+        if not displayed or path_key(displayed) != path_key(fullscreen_source):
             return
 
-        fullscreen_target = job.context.get("fullscreen_target")
+        fullscreen_target = result.get("fullscreen_target")
         if fullscreen_target and os.path.isfile(fullscreen_target):
             self.fullscreen_start_path = fullscreen_target
             self.current_image_path = fullscreen_target
@@ -1409,6 +1436,9 @@ class MainWindow(QMainWindow):
             self.select_image_by_path(fullscreen_target)
             self.fullscreen_viewer.load_image(fullscreen_target)
         else:
+            self.fullscreen_start_path = None
+            self.fullscreen_viewer.set_current_image_path(None)
+            self.fullscreen_viewer.viewer.clear_image()
             self.fullscreen_viewer.close()
 
     def refresh_folder(self):
@@ -1587,6 +1617,7 @@ class MainWindow(QMainWindow):
         self.show_images = self.show_images_action.isChecked()
         self.show_pdfs = self.show_pdfs_action.isChecked()
         self.show_videos = self.show_videos_action.isChecked()
+        self.show_text = self.show_text_action.isChecked()
         self.show_folders = self.show_folders_action.isChecked()
         self._show_options_dirty = True
         if not self.show_menu.isVisible():
@@ -1617,6 +1648,7 @@ class MainWindow(QMainWindow):
             show_images=self.show_images,
             show_pdfs=self.show_pdfs,
             show_videos=self.show_videos,
+            show_text=self.show_text,
             show_folders=self.show_folders
         )
         self.thumbnail_view.set_filter_text(self.filter_edit.text())
@@ -1731,6 +1763,8 @@ class MainWindow(QMainWindow):
             self.video_frame_grabber.stop()
             self.show_placeholder_preview("folder")
         else:
+            self.clear_viewer_prefetch()
+            self.video_frame_grabber.stop()
             self.preview_viewer.clear_image()
         self.image_modified = False
         self.modified_pixmap = None
@@ -1747,7 +1781,7 @@ class MainWindow(QMainWindow):
 
         if item_kind == "folder":
             self.open_folder_path(file_path)
-        elif item_kind == "video":
+        elif item_kind in ("video", "text"):
             self.open_in_associated_program(file_path)
         elif item_kind == "image":
             self.fullscreen_start_path = file_path
@@ -1818,6 +1852,29 @@ class MainWindow(QMainWindow):
         self.current_image_path = file_path
         self.current_item_kind = "image"
         self.load_prefetched_fullscreen(file_path)
+        return True
+
+    def sync_browser_to_viewed_image(self):
+        path = self.fullscreen_viewer.current_image_path
+        if not path or not os.path.isfile(path):
+            return False
+        if self.row_for_path(path) is None:
+            self.navigate_to_folder(os.path.dirname(path))
+        row = self.row_for_path(path)
+        if row is None:
+            return False
+        if self.thumbnail_view.isRowHidden(row):
+            self.filter_edit.clear()
+        # Selecting the same edited image must not trigger a save prompt or
+        # replace its unsaved pixels with a fresh disk decode.
+        self.select_image_by_path(path, update_preview=False)
+        self.thumbnail_view.selectionModel().select(
+            self.thumbnail_view.currentIndex(), QItemSelectionModel.SelectionFlag.ClearAndSelect,
+        )
+        self.preview_viewer.set_pixmap(self.fullscreen_viewer.viewer.pixmap_item.pixmap())
+        self.thumbnail_view.scrollTo(
+            self.thumbnail_view.currentIndex(), self.thumbnail_view.ScrollHint.PositionAtCenter,
+        )
         return True
 
     def leave_fullscreen(self, commit_current):
@@ -1931,14 +1988,14 @@ class MainWindow(QMainWindow):
             )
         return bool(success)
 
-    def selected_file_paths(self):
+    def selected_file_paths(self, include_folders=False):
         paths = []
         indexes = sorted(
             self.thumbnail_view.selectionModel().selectedIndexes(),
             key=lambda index: index.row()
         )
         for index in indexes:
-            if not index.isValid() or index.data(KIND_ROLE) == "folder":
+            if not index.isValid() or (index.data(KIND_ROLE) == "folder" and not include_folders):
                 continue
             path = index.data(PATH_ROLE)
             if path and path not in paths:
@@ -2179,7 +2236,7 @@ class MainWindow(QMainWindow):
 
     def delete_selected_files(self, paths=None, permanent=False, stay_fullscreen=False):
         if paths is None:
-            paths = self.selected_file_paths()
+            paths = self.selected_file_paths(include_folders=True)
         else:
             paths = [path for path in paths if path]
         if not paths:
@@ -2197,9 +2254,12 @@ class MainWindow(QMainWindow):
 
         action_text = "permanently delete" if permanent else "move to the Recycle Bin"
         if len(paths) == 1:
-            message = f"{action_text.capitalize()} this file?\n\n{os.path.basename(paths[0])}"
+            kind = "folder and its contents" if os.path.isdir(paths[0]) else "file"
+            message = f"{action_text.capitalize()} this {kind}?\n\n{os.path.basename(paths[0])}"
         else:
-            message = f"{action_text.capitalize()} {len(paths)} selected files?"
+            message = f"{action_text.capitalize()} {len(paths)} selected items?"
+            if any(os.path.isdir(path) for path in paths):
+                message += "\n\nSelected folders and their contents are included."
 
         reply = QMessageBox.question(
             self,
@@ -2524,7 +2584,7 @@ class MainWindow(QMainWindow):
                     self.fullscreen_viewer.load_image(self.current_image_path)
                     
             if hasattr(self, 'fullscreen_viewer') and self.fullscreen_viewer.isVisible():
-                self.fullscreen_viewer.showFullScreen()
+                self.fullscreen_viewer.show_viewer()
                 self.fullscreen_viewer.activateWindow()
                 self.fullscreen_viewer.setFocus()
 
@@ -2719,6 +2779,8 @@ class MainWindow(QMainWindow):
             ext = ext[1:].lower()
             if ext == "pdf" and self.show_pdfs:
                 kind = "image"
+            elif ext == "txt" and self.show_text:
+                kind = "text"
             elif (
                 ext != "pdf" and
                 ext in self.thumbnail_view._supported_image_formats() and
@@ -2813,7 +2875,7 @@ class MainWindow(QMainWindow):
                     self.fullscreen_viewer.load_image(final_path)
                     
             if hasattr(self, 'fullscreen_viewer') and self.fullscreen_viewer.isVisible():
-                self.fullscreen_viewer.showFullScreen()
+                self.fullscreen_viewer.show_viewer()
                 self.fullscreen_viewer.activateWindow()
                 self.fullscreen_viewer.setFocus()
 
@@ -2926,18 +2988,33 @@ class MainWindow(QMainWindow):
             return
 
         if self.current_image_path:
-            folder, old_name = os.path.split(self.current_image_path)
-            dialog = RenameDialog(old_name, parent_override or self)
-            if dialog.exec() and dialog.new_filename != old_name:
-                new_name = dialog.new_filename
+            old_path = self.current_image_path
+            old_row = self.row_for_path(old_path)
+            folder, old_name = os.path.split(old_path)
+
+            def try_rename(new_name):
+                if new_name == old_name:
+                    return ""
                 new_path = os.path.join(folder, new_name)
+                collision_message = (
+                    f'A file or folder named "{new_name}" already exists. '
+                    "Choose another name and press Rename."
+                )
+                same_path = os.path.normcase(os.path.abspath(old_path)) == os.path.normcase(os.path.abspath(new_path))
+                if not same_path and os.path.lexists(new_path):
+                    return collision_message
                 try:
-                    old_path = self.current_image_path
-                    old_row = self.row_for_path(old_path)
                     os.rename(old_path, new_path)
-                    self.update_renamed_thumbnail_item(old_row, old_path, new_path)
-                except Exception as e:
-                    QMessageBox.warning(self, "Error", f"Failed to rename: {e}")
+                except OSError as error:
+                    if isinstance(error, FileExistsError) or getattr(error, "winerror", None) in (80, 183):
+                        return collision_message
+                    return f"Could not rename the file: {error}\nChange the name or try again."
+                return ""
+
+            dialog = RenameDialog(old_name, parent_override or self, rename_callback=try_rename)
+            if dialog.exec() and dialog.new_filename != old_name:
+                new_path = os.path.join(folder, dialog.new_filename)
+                self.update_renamed_thumbnail_item(old_row, old_path, new_path)
             self.refocus_fullscreen_if_visible()
 
     def open_batch_rename_dialog(self, paths, parent):

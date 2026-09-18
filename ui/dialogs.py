@@ -15,8 +15,9 @@ WINDOWS_RESERVED_FILENAMES = {
 
 
 class RenameDialog(QDialog):
-    def __init__(self, filename, parent=None):
+    def __init__(self, filename, parent=None, rename_callback=None):
         super().__init__(parent)
+        self.rename_callback = rename_callback
         self.original_filename = filename
         self.new_filename = filename
         basename, extension = os.path.splitext(filename)
@@ -37,6 +38,12 @@ class RenameDialog(QDialog):
         fields.addWidget(self.name_edit, 1, 0)
         fields.addWidget(self.extension_edit, 1, 1)
         layout.addLayout(fields)
+
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setProperty("error", True)
+        self.error_label.hide()
+        layout.addWidget(self.error_label)
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -79,6 +86,14 @@ class RenameDialog(QDialog):
         if error:
             QMessageBox.warning(self, "Rename", error)
             return
+        if self.rename_callback is not None:
+            error = self.rename_callback(filename)
+            if error:
+                self.error_label.setText(error)
+                self.error_label.show()
+                self.name_edit.setFocus()
+                self.name_edit.selectAll()
+                return
         self.new_filename = filename
         self.accept()
 

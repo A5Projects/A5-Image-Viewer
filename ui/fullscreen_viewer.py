@@ -1,15 +1,16 @@
 import os
 import random
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QMenu, QApplication, QLabel, QGraphicsView
+    QDialog, QVBoxLayout, QMenu, QApplication, QLabel, QGraphicsView, QToolButton
 )
-from PyQt6.QtCore import Qt, QEvent, QTimer, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QTimer, QRect, QRectF, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QPixmap, QFontMetrics
 from ui.image_viewer import ImageViewer
 from ui.crop_board import ResizableRectItem
 from utils.file_ops import (
     get_fullscreen_hud_visible, set_fullscreen_hud_visible,
     get_slideshow_mode, set_slideshow_mode as save_slideshow_mode,
+    get_viewer_default_mode, get_viewer_state, set_viewer_state,
 )
 
 
@@ -18,7 +19,9 @@ class FullscreenImageViewer(ImageViewer):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.zoom_mode = "fit"
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.selection_rect_item = None
         self.selection_start = None
         self.right_press_pos = None
@@ -26,6 +29,7 @@ class FullscreenImageViewer(ImageViewer):
         self.right_dragged = False
 
     def set_pixmap(self, pixmap):
+        self.zoom_mode = "fit"
         self.clear_selection()
         super().set_pixmap(pixmap)
 
@@ -167,26 +171,33 @@ class FullscreenImageViewer(ImageViewer):
         event.accept()
 
     def wheelEvent(self, event):
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            self.zoom_mode = "manual"
         super().wheelEvent(event)
         self._update_selection_handles()
 
     def fit_to_window(self):
+        self.zoom_mode = "fit"
         super().fit_to_window()
         self._update_selection_handles()
 
     def actual_size(self):
+        self.zoom_mode = "manual"
         super().actual_size()
         self._update_selection_handles()
 
     def zoom_in(self):
+        self.zoom_mode = "manual"
         super().zoom_in()
         self._update_selection_handles()
 
     def zoom_out(self):
+        self.zoom_mode = "manual"
         super().zoom_out()
         self._update_selection_handles()
 
     def zoom_200(self):
+        self.zoom_mode = "manual"
         if self.pixmap_item.pixmap().isNull():
             return
         center = self.mapToScene(self.viewport().rect().center())
@@ -195,12 +206,21 @@ class FullscreenImageViewer(ImageViewer):
         self.centerOn(center)
         self._update_selection_handles()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "zoom_mode", "fit") == "fit":
+            self.fit_to_window()
+        self._update_selection_handles()
+
 class FullScreenViewer(QDialog):
     SLIDESHOW_INTERVAL_MS = 3000
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.display_mode = "fullscreen"
+        self.window_state = get_viewer_state()
+        self._close_commit = True
         self.setObjectName("fullscreenViewer")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
@@ -215,7 +235,7 @@ class FullScreenViewer(QDialog):
         self.viewer.context_menu_requested.connect(self.show_context_menu)
         self.layout.addWidget(self.viewer)
 
-        self.hud_label = QLabel(self.viewer.viewport())
+        self.hud_label = QLabel(self)
         self.hud_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.hud_label.setContentsMargins(8, 5, 8, 5)
         self.hud_label.setStyleSheet("""
@@ -232,6 +252,12 @@ class FullScreenViewer(QDialog):
         self._hud_width = 0
         self._hud_height = 0
         self.hud_label.setVisible(self.hud_visible)
+        self.sync_browser_button = QToolButton(self)
+        self.sync_browser_button.setText("Show in browser")
+        self.sync_browser_button.setToolTip("Select this image in the thumbnail browser (Backspace)")
+        self.sync_browser_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sync_browser_button.clicked.connect(self.sync_browser)
+        self.sync_browser_button.adjustSize()
         
         self.current_image_path = None
         self.slideshow_mode = get_slideshow_mode()
@@ -241,6 +267,83 @@ class FullScreenViewer(QDialog):
         self.slideshow_timer.timeout.connect(self.advance_slideshow)
         
         self.setup_shortcuts()
+
+    def fallback_screen(self):
+        return (self.parent().screen() if self.parent() else None) or QApplication.primaryScreen()
+
+    def saved_screen(self, name):
+        return next((screen for screen in QApplication.screens() if screen.name() == name), self.fallback_screen())
+
+    @staticmethod
+    def bounded_geometry(geometry, available):
+        rect = QRect(*geometry) if geometry else QRect(0, 0, 1000, 700)
+        rect.setWidth(min(max(320, rect.width()), available.width()))
+        rect.setHeight(min(max(240, rect.height()), available.height()))
+        if not geometry or not rect.intersects(available):
+            rect.moveCenter(available.center())
+        rect.moveLeft(max(available.left(), min(rect.left(), available.right() - rect.width() + 1)))
+        rect.moveTop(max(available.top(), min(rect.top(), available.bottom() - rect.height() + 1)))
+        return rect
+
+    def remember_window(self):
+        if self.display_mode == "windowed" and not self.isMinimized():
+            rect = self.normalGeometry() if self.isMaximized() else self.geometry()
+            if rect.isValid():
+                self.window_state["geometry"] = [rect.x(), rect.y(), rect.width(), rect.height()]
+            self.window_state["maximized"] = self.isMaximized()
+            self.window_state["screen"] = self.screen().name()
+        self.window_state["mode"] = self.display_mode
+        self.window_state["last_screen"] = self.screen().name()
+        set_viewer_state(self.window_state)
+
+    def apply_display_mode(self, mode, screen=None):
+        center = self.viewer.mapToScene(self.viewer.viewport().rect().center())
+        self.display_mode = mode
+        flags = Qt.WindowType.Window
+        if mode == "fullscreen":
+            flags |= Qt.WindowType.FramelessWindowHint
+        else:
+            flags |= (Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint |
+                      Qt.WindowType.WindowMinMaxButtonsHint | Qt.WindowType.WindowCloseButtonHint)
+        self.setWindowFlags(flags)
+        self.winId()
+        if mode == "fullscreen":
+            screen = screen or self.saved_screen(self.window_state["last_screen"])
+            self.windowHandle().setScreen(screen)
+            self.setGeometry(screen.geometry())
+            self.showFullScreen()
+        else:
+            screen = self.saved_screen(self.window_state["screen"])
+            self.windowHandle().setScreen(screen)
+            margins = self.windowHandle().frameMargins()
+            available = screen.availableGeometry().adjusted(
+                margins.left(), margins.top(), -margins.right(), -margins.bottom(),
+            )
+            self.setGeometry(self.bounded_geometry(self.window_state["geometry"], available))
+            if self.window_state["maximized"]:
+                self.showMaximized()
+            else:
+                self.showNormal()
+        if self.viewer.zoom_mode == "manual":
+            self.viewer.centerOn(center)
+        self.window_state["mode"] = mode
+        self.window_state["last_screen"] = screen.name()
+        set_viewer_state(self.window_state)
+
+    def show_viewer(self):
+        if not self.isVisible():
+            mode = get_viewer_default_mode()
+            if mode == "last_used":
+                mode = self.window_state["mode"]
+            self.apply_display_mode(mode)
+        elif self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+
+    def toggle_display_mode(self):
+        screen = self.screen()
+        self.remember_window()
+        self.apply_display_mode("windowed" if self.display_mode == "fullscreen" else "fullscreen", screen)
+        self.refocus()
 
     def setup_shortcuts(self):
         from PyQt6.QtGui import QShortcut, QKeySequence
@@ -375,6 +478,7 @@ class FullScreenViewer(QDialog):
 
     def set_current_image_path(self, file_path):
         self.current_image_path = file_path
+        self.setWindowTitle(f"{os.path.basename(file_path)} — A5 Image Viewer" if file_path else "A5 Image Viewer")
         self._hud_filename = os.path.basename(file_path) if file_path else ""
         extension = os.path.splitext(file_path or "")[1].lstrip(".")
         self._hud_format = extension.upper() or "IMAGE"
@@ -393,13 +497,13 @@ class FullScreenViewer(QDialog):
             self.viewer.clear_image()
             self.viewer.load_image(file_path)
             self.update_hud_from_pixmap(self.viewer.pixmap_item.pixmap())
-        self.showFullScreen()
+        self.show_viewer()
         QTimer.singleShot(0, self.fit_after_fullscreen_show)
         self.refresh_hud()
         self.refocus()
 
     def fit_after_fullscreen_show(self):
-        if self.isVisible() and not self.viewer.pixmap_item.pixmap().isNull():
+        if self.isVisible() and self.viewer.zoom_mode == "fit" and not self.viewer.pixmap_item.pixmap().isNull():
             self.viewer.fit_to_window()
 
     def update_hud_from_pixmap(self, pixmap):
@@ -411,13 +515,26 @@ class FullScreenViewer(QDialog):
             self._hud_height = 0
         self.refresh_hud()
 
+    def sync_browser(self):
+        if self.parent() and hasattr(self.parent(), "sync_browser_to_viewed_image"):
+            self.parent().sync_browser_to_viewed_image()
+
     def refresh_hud(self):
+        origin = self.viewer.viewport().mapTo(self, QPoint(0, 0))
+        self.sync_browser_button.move(
+            origin.x() + max(12, self.viewer.viewport().width() - self.sync_browser_button.width() - 12),
+            origin.y() + 12,
+        )
+        self.sync_browser_button.raise_()
         if not self.hud_visible:
             self.hud_label.hide()
             return
 
         viewport_width = max(1, self.viewer.viewport().width())
-        maximum_width = max(80, min(viewport_width - 24, int(viewport_width * 0.6)))
+        maximum_width = max(80, min(
+            viewport_width - self.sync_browser_button.width() - 36,
+            int(viewport_width * 0.6),
+        ))
         text_width = max(32, maximum_width - 16)
         metrics = QFontMetrics(self.hud_label.font())
         filename = metrics.elidedText(
@@ -432,7 +549,7 @@ class FullScreenViewer(QDialog):
         self.hud_label.setMaximumWidth(maximum_width)
         self.hud_label.setText(f"{filename}\n{details}")
         self.hud_label.adjustSize()
-        self.hud_label.move(12, 12)
+        self.hud_label.move(origin + QPoint(12, 12))
         self.hud_label.show()
         self.hud_label.raise_()
 
@@ -474,6 +591,9 @@ class FullScreenViewer(QDialog):
 
     def handle_key_press(self, event):
         key = event.key()
+        if key == Qt.Key.Key_F11:
+            self.toggle_display_mode()
+            return True
         if key == Qt.Key.Key_Print:
             return False
         text = event.text().lower()
@@ -483,18 +603,18 @@ class FullScreenViewer(QDialog):
         alt = bool(modifiers & Qt.KeyboardModifier.AltModifier)
         plain_key = not ctrl and not shift and not alt
 
+        if plain_key and key == Qt.Key.Key_Backspace:
+            self.sync_browser()
+            return True
+        if plain_key and key == Qt.Key.Key_Space:
+            self.next_image()
+            return True
+
         if key == Qt.Key.Key_Escape:
-            self.stop_slideshow()
-            if self.parent() and hasattr(self.parent(), 'leave_fullscreen'):
-                if not self.parent().leave_fullscreen(commit_current=False):
-                    return True
+            self._close_commit = False
             self.close()
             return True
         if key in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
-            self.stop_slideshow()
-            if self.parent() and hasattr(self.parent(), 'leave_fullscreen'):
-                if not self.parent().leave_fullscreen(commit_current=True):
-                    return True
             self.close()
             return True
         if ctrl and key == Qt.Key.Key_Home:
@@ -599,7 +719,7 @@ class FullScreenViewer(QDialog):
         return False
 
     def refocus(self):
-        self.showFullScreen()
+        self.show_viewer()
         self.raise_()
         self.activateWindow()
         QApplication.setActiveWindow(self)
@@ -622,6 +742,13 @@ class FullScreenViewer(QDialog):
             self.refocus()
 
     def closeEvent(self, event):
+        commit = self._close_commit
+        self._close_commit = True
+        if self.parent() and hasattr(self.parent(), "leave_fullscreen"):
+            if not self.parent().leave_fullscreen(commit_current=commit):
+                event.ignore()
+                return
+        self.remember_window()
         self.stop_slideshow()
         super().closeEvent(event)
 
@@ -635,6 +762,11 @@ class FullScreenViewer(QDialog):
         slideshow_stop_requested = False
 
         menu = QMenu(self)
+        mode_action = menu.addAction("Windowed\tF11" if self.display_mode == "fullscreen" else "Fullscreen\tF11")
+        mode_action.triggered.connect(self.toggle_display_mode)
+        sync_action = menu.addAction("Show in browser\tBackspace")
+        sync_action.triggered.connect(self.sync_browser)
+        menu.addSeparator()
         
 
         main_window = self.parent()
@@ -676,7 +808,7 @@ class FullScreenViewer(QDialog):
                 slideshow_menu.addAction(stop_action)
             menu.addSeparator()
 
-            next_action = QAction("Next Image\tPgDown / N", self)
+            next_action = QAction("Next Image\tSpace / PgDown / N", self)
             next_action.triggered.connect(self.next_image)
             menu.addAction(next_action)
             

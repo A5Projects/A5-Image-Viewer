@@ -321,6 +321,53 @@ class CropView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.selection_rect_item = None
         self.start_pos = None
+        self.zoom_mode = "fit"
+        self.pan_last_pos = None
+        self.pan_start_pos = None
+        self.pan_dragged = False
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+
+    def update_selection_handles(self):
+        if self.selection_rect_item:
+            self.selection_rect_item.update_handles_pos()
+
+    def fit_to_window(self):
+        self.zoom_mode = "fit"
+        if self.scene() is not None:
+            for item in self.scene().items():
+                if isinstance(item, QGraphicsPixmapItem):
+                    self.fitInView(item, Qt.AspectRatioMode.KeepAspectRatio)
+                    break
+        self.update_selection_handles()
+
+    def zoom_by(self, factor):
+        if not self.scene() or self.sceneRect().isEmpty():
+            return
+        self.zoom_mode = "manual"
+        self.scale(factor, factor)
+        self.update_selection_handles()
+
+    def zoom_in(self):
+        self.zoom_by(1.10)
+
+    def zoom_out(self):
+        self.zoom_by(1 / 1.10)
+
+    def actual_size(self):
+        self.zoom_mode = "manual"
+        self.resetTransform()
+        self.update_selection_handles()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.angleDelta().y() > 0:
+                self.zoom_in()
+            elif event.angleDelta().y() < 0:
+                self.zoom_out()
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def get_aspect_ratio(self):
         if self.parent() and hasattr(self.parent(), "get_aspect_ratio"):
@@ -328,6 +375,12 @@ class CropView(QGraphicsView):
         return None
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.pan_last_pos = event.pos()
+            self.pan_start_pos = event.pos()
+            self.pan_dragged = False
+            event.accept()
+            return
         item = self.itemAt(event.pos())
         if isinstance(item, ResizableRectItem):
             super().mousePressEvent(event)
@@ -353,6 +406,17 @@ class CropView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.pan_last_pos is not None:
+            if (event.pos() - self.pan_start_pos).manhattanLength() >= 4:
+                self.pan_dragged = True
+            if self.pan_dragged:
+                delta = event.pos() - self.pan_last_pos
+                self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.pan_last_pos = event.pos()
+            event.accept()
+            return
         if self.start_pos is not None:
             current_pos = self.mapToScene(event.pos())
             
@@ -390,6 +454,12 @@ class CropView(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton and self.pan_last_pos is not None:
+            self.pan_last_pos = None
+            self.pan_start_pos = None
+            self.viewport().unsetCursor()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self.start_pos is not None:
             self.start_pos = None
             if self.selection_rect_item is not None:
@@ -402,12 +472,8 @@ class CropView(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        for item in self.scene().items():
-            if isinstance(item, QGraphicsPixmapItem):
-                self.fitInView(item, Qt.AspectRatioMode.KeepAspectRatio)
-                if self.selection_rect_item:
-                    self.selection_rect_item.update_handles_pos()
-                break
+        if self.zoom_mode == "fit":
+            self.fit_to_window()
 
 class CropBoard(QDialog):
     image_saved = pyqtSignal(str)
@@ -503,7 +569,26 @@ class CropBoard(QDialog):
         self.view.viewport().installEventFilter(self)
         self.scene = QGraphicsScene(self)
         self.view.setScene(self.scene)
-        layout.addWidget(self.view)
+        view_row = QHBoxLayout()
+        view_row.addWidget(self.view, 1)
+        zoom_tools = QVBoxLayout()
+        self.zoom_buttons = {}
+        for text, tooltip, callback in (
+            ("+", "Zoom in (+ / = or Ctrl+mouse wheel up); pan with right mouse drag", self.view.zoom_in),
+            ("-", "Zoom out (- or Ctrl+mouse wheel down); pan with right mouse drag", self.view.zoom_out),
+            ("*", "Fit to window (*)", self.view.fit_to_window),
+            ("1:1", "Actual image size (/)", self.view.actual_size),
+        ):
+            button = QToolButton(self)
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.setFixedSize(32, 30)
+            button.clicked.connect(callback)
+            zoom_tools.addWidget(button)
+            self.zoom_buttons[text] = button
+        zoom_tools.addStretch()
+        view_row.addLayout(zoom_tools)
+        layout.addLayout(view_row, 1)
         
         self.pixmap_item = QGraphicsPixmapItem(self.current_pixmap)
         self.scene.addItem(self.pixmap_item)
@@ -515,6 +600,11 @@ class CropBoard(QDialog):
         self.view.customContextMenuRequested.connect(self.show_context_menu)
         
         # Shortcuts
+        for key, callback in (("+", self.view.zoom_in), ("=", self.view.zoom_in),
+                              ("-", self.view.zoom_out), ("*", self.view.fit_to_window),
+                              ("/", self.view.actual_size)):
+            QShortcut(QKeySequence(key), self).activated.connect(callback)
+        QShortcut(QKeySequence("Ctrl+A"), self).activated.connect(self.select_all)
         undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         undo_shortcut.activated.connect(self.undo)
         QShortcut(QKeySequence(Qt.Key.Key_PageDown), self).activated.connect(lambda: self.open_adjacent_image(1))
@@ -805,7 +895,7 @@ class CropBoard(QDialog):
             self.view.selection_rect_item = None
 
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
-        self.view.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_to_window()
         self.setWindowTitle(f"Crop Board - {os.path.basename(image_path)}")
         self.image_changed.emit(image_path)
         self.schedule_prefetch()
@@ -896,7 +986,18 @@ class CropBoard(QDialog):
         super().keyPressEvent(event)
 
     def show_context_menu(self, pos):
+        if self.view.pan_dragged:
+            self.view.pan_dragged = False
+            return
         menu = QMenu(self)
+        for text, callback in (("Zoom in\t+ / = / Ctrl+wheel up", self.view.zoom_in),
+                               ("Zoom out\t- / Ctrl+wheel down", self.view.zoom_out),
+                               ("Fit to window\t*", self.view.fit_to_window),
+                               ("Actual image size\t/", self.view.actual_size)):
+            menu.addAction(text).triggered.connect(callback)
+        menu.addSeparator()
+        select_all_action = menu.addAction("Select All\tCtrl+A")
+        select_all_action.triggered.connect(self.select_all)
         crop_action = QAction("Crop Selection", self)
         crop_action.triggered.connect(self.perform_crop_in_memory)
         menu.addAction(crop_action)
@@ -953,6 +1054,19 @@ class CropBoard(QDialog):
         if len(self.history) > 5:
             self.history.pop(0)
 
+    def select_all(self):
+        if self.current_pixmap.isNull():
+            return
+        self.clear_crop_selection()
+        self.view.start_pos = None
+        selection = ResizableRectItem(
+            self.pixmap_item.boundingRect(), self.pixmap_item, self.view.get_aspect_ratio,
+        )
+        self.scene.addItem(selection)
+        self.scene.clearSelection()
+        selection.setSelected(True)
+        self.view.selection_rect_item = selection
+
     def clear_crop_selection(self):
         if self.view.selection_rect_item:
             self.scene.removeItem(self.view.selection_rect_item)
@@ -963,7 +1077,7 @@ class CropBoard(QDialog):
         if clear_selection:
             self.clear_crop_selection()
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
-        self.view.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_to_window()
 
     def apply_geometric_transform(self, transform):
         if self.current_pixmap.isNull():

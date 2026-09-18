@@ -7,6 +7,38 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from utils.file_ops import get_format_quality, set_format_quality, get_convert_appendix, set_convert_appendix
 from PIL import Image
 
+def path_key(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def same_file(source, target):
+    if path_key(source) == path_key(target):
+        return True
+    try:
+        return os.path.samefile(source, target)
+    except OSError:
+        return False
+
+
+def build_conversion_plan(files, target_folder, appendix, format_str):
+    plan = []
+    targets = set()
+    sources = {path_key(path) for path in files}
+    for source in files:
+        folder, name = os.path.split(source)
+        stem, extension = os.path.splitext(name)
+        output_ext = format_str.lower() if format_str else extension[1:].lower()
+        target = os.path.join(target_folder or folder, f"{stem}{appendix}.{output_ext}")
+        key = path_key(target)
+        if key in targets:
+            raise ValueError(f"Multiple selected images would write to {target}. Choose another format or convert them separately.")
+        if key in sources and key != path_key(source):
+            raise ValueError(f"The output {target} would overwrite another selected source. Choose a different appendix or output folder.")
+        targets.add(key)
+        plan.append((source, target))
+    return plan
+
+
 class ConvertWorker(QThread):
     progress = pyqtSignal(int, int) # current, total
     finished = pyqtSignal(int, int) # success, total
@@ -30,19 +62,17 @@ class ConvertWorker(QThread):
     def run(self):
         success_count = 0
         total = len(self.files)
+        try:
+            plan = build_conversion_plan(self.files, self.target_folder, self.appendix, self.format_str)
+        except ValueError as error:
+            self.error.emit("", str(error))
+            self.finished.emit(0, total)
+            return
         
-        for i, file_path in enumerate(self.files):
+        for i, (file_path, new_path) in enumerate(plan):
             if not self._is_running:
                 break
                 
-            folder, name = os.path.split(file_path)
-            basename, original_ext = os.path.splitext(name)
-            
-            dest_folder = self.target_folder if self.target_folder else folder
-            output_ext = self.format_str.lower() if self.format_str else original_ext[1:].lower()
-            new_name = f"{basename}{self.appendix}.{output_ext}"
-            new_path = os.path.join(dest_folder, new_name)
-            
             try:
                 with Image.open(file_path) as opened:
                     img = opened.copy()
@@ -84,7 +114,7 @@ class ConvertWorker(QThread):
                     except Exception:
                         pass
                         
-                if self.delete_orig and file_path != new_path:
+                if self.delete_orig and not same_file(file_path, new_path):
                     try:
                         os.remove(file_path)
                     except Exception:
@@ -264,6 +294,11 @@ class ConvertDialog(QDialog):
             
         appendix = self.appendix_edit.text()
         quality = self.quality_slider.value()
+        try:
+            plan = build_conversion_plan(self.files, target_folder, appendix, fmt)
+        except ValueError as error:
+            QMessageBox.warning(self, "Conflicting output names", str(error))
+            return
         
         # Save config preferences
         set_convert_appendix(appendix)
@@ -272,17 +307,10 @@ class ConvertDialog(QDialog):
             
         # Check for potential overwrites
         overwrites = []
-        for file_path in self.files:
-            folder, name = os.path.split(file_path)
-            basename, original_ext = os.path.splitext(name)
-            dest = target_folder if target_folder else folder
-            output_ext = fmt.lower() if fmt else original_ext[1:].lower()
-            new_name = f"{basename}{appendix}.{output_ext}"
-            new_path = os.path.join(dest, new_name)
-            
+        for file_path, new_path in plan:
             # If it's literally the same file being targeted, or if it already exists
             if os.path.exists(new_path):
-                overwrites.append(new_name)
+                overwrites.append(os.path.basename(new_path))
                 
         if overwrites and not ConvertDialog.suppress_overwrite_warning:
             if not self.confirm_overwrite_warning(overwrites):
@@ -311,8 +339,22 @@ class ConvertDialog(QDialog):
         print(f"Failed to convert {file_path}: {msg}")
         
     def on_finished(self, success_count, total):
+        if self.worker is not None:
+            self.worker.wait()
+        self.worker = None
         QMessageBox.information(self, "Done", f"Processed {success_count} of {total} files successfully.")
         self.accept()
+
+    def reject(self):
+        if self.worker is not None and self.worker.isRunning():
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None and self.worker.isRunning():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def confirm_overwrite_warning(self, overwrites):
         msg = QMessageBox(self)

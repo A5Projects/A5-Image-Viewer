@@ -1,0 +1,803 @@
+# A5ImageViewer Development Guide
+
+This document is a technical handoff for developers and coding agents working on
+A5ImageViewer. It describes the architecture, important implementation choices,
+build and test workflow, and the behavioral contracts that are easy to break
+when changing the application.
+
+It reflects the September 18, 2026 update (`v1.0.0-20260918`).
+Read [README.md](README.md) first for the product goals and user
+facing overview.
+
+## 1. Product Direction
+
+A5ImageViewer is a Windows-oriented image browser, fullscreen viewer, and
+lightweight batch editor. Its primary design constraint is responsiveness and
+stability while the machine is under heavy CPU, RAM, GPU, or VRAM load.
+
+The practical priorities are:
+
+- Avoid deliberate GPU-heavy image pipelines. Image decoding and editing use
+  Qt image classes and Pillow.
+- Keep runtime dependencies small. The only direct runtime dependencies are
+  PyQt6 and Pillow.
+- Favor fast, direct keyboard workflows over feature breadth.
+- Keep large folders usable through bounded caches, background workers,
+  prioritization, and incremental model updates.
+- Prefer native Windows behavior for file operations and associations where it
+  adds meaningful convenience.
+- Keep the interface functional and compact. Dark is the default theme, with
+  Medium Dark and Light alternatives.
+- Do not add a database or persistent thumbnail index without a compelling
+  reason. The current application scans the active folder and caches decoded
+  thumbnails only in memory.
+
+This is not intended to match the complete editing or cataloguing surface of
+XnView, FastStone, Photoshop, or similar applications.
+
+## 2. Technology and Execution Model
+
+| Area | Implementation |
+| --- | --- |
+| Language | Python 3 |
+| GUI | PyQt6 Widgets, Graphics View, Qt Multimedia |
+| Image processing | Pillow and Qt `QImage`/`QPixmap` |
+| Tests | Standard-library `unittest`, mostly offscreen Qt |
+| Portable build | PyInstaller `--onefile` |
+| Installed build | PyInstaller `--onedir`, packaged with Inno Setup |
+| Windows integration | `ctypes` calls to Shell and User32 APIs |
+| Persistent state | One JSON file beside the source tree or executable |
+
+The application is a traditional single-process Qt application. GUI objects
+and models live on the Qt main thread. Thumbnail decoding, folder previews,
+crop/viewer prefetch, conversion, batch rename, batch transforms, and transfer
+preflight checks use worker threads. Results return to the GUI through Qt
+signals.
+
+There is no plugin system, dependency injection framework, ORM, telemetry,
+network service, or updater.
+
+## 3. Running, Testing, and Building
+
+### Run from source
+
+The convenient Windows launcher creates/reuses `.venv`, installs runtime
+requirements, and starts the application:
+
+```powershell
+.\run.bat
+```
+
+Equivalent commands:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe main.py
+```
+
+`main.py` creates the `QApplication`, selects Fusion style, applies the saved
+theme, parses the first existing command-line path, and constructs
+`MainWindow`. Passing an image opens its folder, selects the image, and opens
+fullscreen. Passing a folder opens the browser at that folder.
+
+### Run tests
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+The current suite contains 177 tests. Test modules set
+`QT_QPA_PLATFORM=offscreen` where GUI construction is needed. Tests that write
+configuration should redirect `utils.file_ops.CONFIG_FILE` to a temporary
+directory and restore it during teardown. Never intentionally run a settings
+test against the user's real `config.json`.
+
+Useful focused commands:
+
+```powershell
+.venv\Scripts\python.exe -m unittest tests.test_adjust_board -v
+.venv\Scripts\python.exe -m unittest tests.test_main_window_batch_integration -v
+.venv\Scripts\python.exe -m compileall -q main.py ui utils
+```
+
+### Build executables
+
+```powershell
+.\build-exe.bat
+.\build-installer.bat
+```
+
+Both scripts call `prepare-build-env.bat`, which creates/reuses the root
+`.venv` and installs `requirements-build.txt` when PyQt6, Pillow, or
+PyInstaller is missing.
+
+Build outputs go to `output_exe`:
+
+- `build-exe.bat` creates the one-file portable `!A5ImageViewer.exe`. Rename a
+  copy to `A5ImageViewer-Portable-<version>.exe` for release distribution.
+- `build-installer.bat` creates a PyInstaller onedir staging tree and compiles
+  `A5ImageViewer-Setup-<version>.exe` with Inno Setup 6 or 7.
+
+The local `PyToExe` folder is an ignored historical/local tool and is not used
+by the supported build process.
+
+For a release version change, keep these locations synchronized:
+
+- `APP_VERSION` in `build-installer.bat`
+- file and product versions in `installer/A5ImageViewer.version.txt`
+- release filenames and instructions in `README.md`
+- the Git tag/release name
+
+The Inno script receives `MyAppVersion` from the build BAT. The install folder
+contains `A5ImageViewer.exe` and `_internal` directly. Upgrade installation
+deletes/replaces those runtime files but deliberately preserves the generated
+`config.json`.
+
+## 4. Repository Map
+
+### Entry point and coordination
+
+- `main.py`: application creation, icon/theme setup, and command-line path
+  activation.
+- `ui/main_window.py`: central coordinator and largest module. Owns current
+  folder/file state, navigation, menus, shortcuts, file operations, editor
+  launches, worker services, and synchronization between views.
+
+### Browsing and viewing
+
+- `ui/thumbnail_view.py`: folder scanning, item model, thumbnail/folder-preview
+  workers, in-memory cache, filtering, selection painting, and file drag source.
+- `ui/image_viewer.py`: small reusable `QGraphicsView` pixmap viewer used for
+  previewing and basic zoom/pan behavior.
+- `ui/fullscreen_viewer.py`: fullscreen dialog, pixel selection, HUD,
+  navigation, slideshow, shortcuts, and context menu.
+- `ui/folder_shortcuts.py`: compact two-column system/favorites lists and the
+  shrinkable drive-button strip.
+
+### Editing and batch work
+
+- `ui/crop_board.py`: serial crop/transform editor, selection handles, five
+  entry undo history, save prompts, automatic `_crop` naming, and bounded
+  adjacent-image prefetch.
+- `ui/adjust_board.py`: serial Pillow-based adjustment and resize editor,
+  bounded preview, zoom/pan, save/copy workflows, and setting carryover.
+- `ui/batch_operations.py`: two-phase batch rename and atomic batch rotate/flip.
+- `ui/convert_dialog.py`: threaded format conversion and optional transforms.
+
+### Dialogs and file transfer
+
+- `ui/dialogs.py`: split name/extension rename dialog and recent-folder
+  Copy To/Move To destination dialog.
+- `ui/transfer_conflicts.py`: asynchronous transfer preflight, comparison
+  dialog, replace/skip/rename decisions, and queued job coordination.
+
+### Shared behavior
+
+- `ui/theme.py`: application palette, stylesheet, theme tokens, and generated
+  scrollbar arrow assets.
+- `ui/settings_dialog.py`: startup, theme, thumbnail size, and resource profile
+  settings.
+- `utils/file_ops.py`: JSON configuration plus Windows Shell copy/move/delete
+  wrappers.
+- `utils/windows_shell.py`: associated application/editor, print, wallpaper,
+  and filtered Send To integration.
+- `utils/image_ops.py`: older/simple Pillow helpers. Most current editor logic
+  lives in the UI modules instead.
+
+### Packaging and metadata
+
+- `requirements.txt`: PyQt6 and Pillow.
+- `requirements-build.txt`: runtime requirements plus PyInstaller.
+- `installer/A5ImageViewer.iss`: Inno Setup layout and per-user file
+  association registration.
+- `installer/A5ImageViewer.version.txt`: Windows executable version resource.
+- `A5ImageViewer.ico`: current application/build icon. `main.ico` is also
+  present but current code and build scripts reference `A5ImageViewer.ico`.
+
+## 5. Runtime Ownership and State Flow
+
+`MainWindow` is intentionally the integration point. Avoid creating parallel
+sources of truth in child widgets.
+
+Important state fields include:
+
+- `current_folder_path`: folder represented by the thumbnail model.
+- `current_image_path`: current item path. Despite the name, context-menu code
+  can temporarily point it at a folder, so always check `current_item_kind`.
+- `current_item_kind`: `image`, `video`, `text`, or `folder`.
+- `image_modified` and `modified_pixmap`: unsaved main/fullscreen rotate or
+  flip state.
+- `sort_key` and `sort_reverse`: active non-folder ordering.
+- `show_images`, `show_pdfs`, `show_videos`, and `show_folders`: scan/filter
+  categories.
+- `navigation_history` and `navigation_index`: browser back/forward history.
+- `fullscreen_start_path`: path used to reconcile fullscreen exit and moves.
+
+The thumbnail model uses a `QStandardItemModel`. Custom roles in
+`ui/thumbnail_view.py` are the shared item contract:
+
+| Role | Meaning |
+| --- | --- |
+| `PATH_ROLE` | Full path and primary item identity |
+| `KIND_ROLE` | `image`, `video`, `text`, or `folder` |
+| `EXT_ROLE` | Lowercase extension without a period |
+| `SIZE_ROLE` | File size from `stat` |
+| `MODIFIED_ROLE` | Modification timestamp |
+| `WIDTH_ROLE` / `HEIGHT_ROLE` | Decoded image or video-frame dimensions |
+
+The `ThumbnailView.files` worker record is a tuple of
+`(path, name, extension, modified_time, kind, file_size)`. If model rows are
+inserted, removed, or renamed manually, update `path_items`, cache keys, role
+data, and worker records together. Prefer existing helpers such as
+`add_thumbnail_paths`, `remove_thumbnail_paths`,
+`update_saved_thumbnail_item`, `update_renamed_thumbnail_item`, and
+`sync_worker_records`.
+
+Path identity is normally compared using absolute, normalized,
+case-normalized paths. Preserve this approach on Windows. Do not rely on the
+slash style or original casing as identity.
+
+## 6. Folder Scanning, Sorting, and Filtering
+
+`ThumbnailView._scan_files` uses `os.scandir` and builds the model before image
+decoding begins.
+
+- Folders are always sorted A-Z and placed before files.
+- Images/videos/PDFs use the selected name, date, or type ordering.
+- The text filter applies to files; enabled folders remain visible for
+  navigation.
+- Changes in the Show popup are batched and applied after the menu closes.
+- A favorite folder can remember its sort key/direction. Non-favorites do not
+  write per-folder sort state.
+- The main window title is the current directory name, or the drive name for a
+  root, which helps distinguish multiple instances in the taskbar.
+- Back/forward history supports Alt+Left, Alt+Right, and mouse thumb buttons.
+
+The left navigation area combines fixed system locations, scrolling favorites,
+a compact drive strip, and `QFileSystemModel` tree. The drive strip reports no
+horizontal minimum and hides rightmost drive buttons when narrow. The tree uses
+content-sized, per-pixel horizontal scrolling for deep paths.
+
+## 7. Thumbnail and Preview Pipeline
+
+The thumbnail system is deliberately demand-aware:
+
+1. A folder scan creates placeholder rows synchronously.
+2. `ThumbnailTaskQueue` tracks background, priority, in-flight, awaiting-GUI,
+   failed, and re-requested rows under a `Condition`.
+3. Low-priority `ThumbnailWorker` threads decode scaled images with
+   `QImageReader`.
+4. Visible/nearby rows are promoted. Delivery is backpressured by
+   `max_awaiting` so workers cannot flood the GUI event queue.
+5. Results include a generation number. Stale results from an older folder or
+   thumbnail size are ignored.
+6. An `OrderedDict` cache tracks estimated byte cost and evicts old, unpinned
+   entries when the configured limit is reached.
+
+Visible rows are pinned against eviction. If the cache is full, background fill
+pauses while requested/visible work can still proceed.
+
+Folder mosaic previews use a separate delayed low-priority worker. It waits
+about 1.2 seconds before background work, scans at most 2000 direct entries,
+does not recurse, and uses at most four decodable images. Empty folders retain
+the generic folder icon.
+
+Video previews are owned by `VideoFrameGrabber` in `main_window.py` and use Qt
+Multimedia (`QMediaPlayer`/`QVideoSink`) when available. Video rows display file
+size immediately, before a frame is extracted. Requests are serialized and
+generation checked. A missing multimedia backend should degrade to placeholder
+icons, not prevent image browsing.
+
+Reader lifetime is important on Windows. A live decoder can prevent rename,
+move, or delete. Before destructive operations, use `pause_file_access`, clear
+viewer prefetch, pause thumbnail background activity, and shut down the video
+decoder when relevant. Resume through `resume_file_access` afterward.
+
+## 8. Supported Content and Editing Boundary
+
+The browser recognizes:
+
+- Explicit images: JPG/JPEG, PNG, BMP, WebP, GIF, TIFF, and additional formats
+  reported by `QImageReader`.
+- PDF as a separate visible category. Internally it still has kind `image`, so
+  code must also inspect `EXT_ROLE` or the extension.
+- Videos: MP4, M4V, MOV, WebM, MKV, AVI, and WMV.
+- Optional `.txt` caption files, case-insensitive, with `kind="text"`. The Show
+  checkbox starts off each application session. Text rows have a TXT icon and
+  file metadata, clear the image preview when selected, and open externally on
+  activation. No text content is decoded, previewed, or prefetched. Mixed
+  image/text selections use ordinary transfer, clipboard, drag, and conflict
+  handling. Caption pairing is manual.
+
+The fixed editable-image allowlist in `main_window.py` is JPG/JPEG, PNG, BMP,
+WebP, GIF, and TIFF. PDFs are deliberately viewable but excluded from Crop and
+Adjust navigation snapshots. Videos are preview-only.
+
+Most Qt readers call `setAutoTransform(False)`. Do not silently enable EXIF
+auto-rotation in one path without checking thumbnail, preview, fullscreen,
+crop, save, and metadata behavior together.
+
+## 9. Viewer and Fullscreen Behavior
+
+`ImageViewer` is a `QGraphicsView` containing one `QGraphicsPixmapItem`. Setting
+a pixmap updates the scene and fits it. Ctrl+wheel zooms; arrow keys pan.
+
+`FullScreenViewer` is a shared image-view dialog owned by `MainWindow`, supporting
+frameless fullscreen and a bordered, resizable window:
+
+- Settings selects Fullscreen (default), Windowed, or Remember last used for
+  opening the viewer. F11 and the context menu toggle the current mode.
+- `show_viewer` and `apply_display_mode` centralize presentation. Loading another
+  image or returning from editors must not force fullscreen or reset normal
+  window geometry. Keep direct `showFullScreen` calls inside that implementation.
+- Windowed mode initially maximizes on the browser monitor. Persist normal
+  geometry, maximized state, monitor name, and last mode on mode switches/close;
+  restore within an available screen if the original monitor disappears.
+- `FullscreenImageViewer.zoom_mode` tracks Fit/manual zoom. Resize refits only in
+  Fit mode; manual scale and image center are preserved. New images start in Fit.
+- Title-bar close and Alt+F4 commit the displayed browser selection through the
+  existing save prompt. Escape retains its original start-selection behavior;
+  Enter commits the displayed selection. All close paths honor Cancel.
+
+- Its current path must be updated on every navigation, rename, move, or save.
+  Fullscreen file commands must act on this displayed path, not the path used
+  when fullscreen was first entered.
+- Navigation follows the current visible image order and stops at both ends.
+- A successful move of the displayed image advances to the next remaining
+  visible image, falls back to the previous image at the end, and closes
+  fullscreen if none remain. Browser selection follows the replacement image.
+  Queued moves choose the replacement at completion and compare normalized paths.
+- Plain wheel navigates images; Ctrl+wheel zooms.
+- Space also advances. Backspace, the Show in browser button, and its context
+  menu action synchronize browser selection/preview without closing or changing
+  `fullscreen_start_path`. Preserve unsaved pixels during this explicit sync.
+- HUD and sync button belong to the outer viewer dialog, positioned relative to
+  the viewport. Do not parent them to the scrolling viewport: Qt scrolls child
+  widgets along with its contents.
+- Right-drag pans. A right click without dragging opens the context menu.
+- Left-drag creates a resizable pixel selection. Ctrl+A selects the whole
+  image; Ctrl+C copies the selected pixels or whole image.
+- Pixmap-changing actions clear the pixel selection.
+- The HUD is a mouse-transparent label showing filename, format, and current
+  displayed dimensions. Ctrl+H toggles/persists it; plain H remains horizontal
+  flip.
+- `5`/keypad 5 sets exactly 200 percent, `*` fits, `/` uses actual size, and
+  `+`/`-` zoom.
+- Ordered and randomized slideshows use a fixed 3000 ms timer. Pause toggles
+  the saved mode. Slideshows stop rather than wrap.
+
+Dialogs launched from fullscreen should be parented to the fullscreen dialog.
+Use `transfer_dialog_parent`, `parent_override`, and the existing refocus
+helpers so native/app dialogs do not disappear behind it.
+
+## 10. Editing Workflows
+
+### Main/fullscreen transforms
+
+Single-image rotate/flip operations modify an in-memory `QPixmap` and set
+`image_modified`. Preview and fullscreen share that displayed pixmap. Leaving
+or changing the image invokes the save/discard/cancel prompt. A save refreshes
+only the affected thumbnail.
+
+Selecting multiple images routes rotate/flip to `BatchRotateDialog`. The worker
+uses Pillow, writes a temporary file in the source folder, and calls
+`os.replace` only after a successful encode. It preserves selected metadata
+where supported, normalizes EXIF orientation to 1, and explicitly rejects
+animated/multi-frame inputs.
+
+### Crop Board
+
+`CropBoard` loads a full `QPixmap` and supports crop, rotate, flip, reset, and a
+five-state undo history. Selection rectangles become resizable immediately.
+Ctrl+A creates a resizable selection covering the entire current image.
+Side buttons and +/=, -, *, / shortcuts provide zoom, Fit, and actual size.
+Ctrl+wheel zooms and right-drag pans; left-drag retains crop selection. CropView
+tracks Fit/manual zoom, refits on resize only in Fit, and resets to Fit on image
+navigation or transforms. It uses the existing full-resolution pixmap and
+prefetch cache; zoom never changes decoded pixels or selection coordinates.
+Navigation uses a snapshot of visible editable image paths and does not wrap.
+
+Unsaved navigation offers Save, Discard, and Cancel with session-only remember
+behavior. Crop-to-file defaults to sibling names:
+
+```text
+name_crop.ext
+name_crop2.ext
+name_crop3.ext
+```
+
+When Auto is off, the same unique name is prefilled in a Save As dialog. When
+Auto is on, it saves directly. The Ask checkbox controls overwrite confirmation
+for saving back to the source.
+
+Adjacent-image prefetch is bounded by the resource profile. Oversized images
+are skipped rather than allowed to exceed the prefetch budget. Cache entries
+are checked against `(size, mtime_ns)` fingerprints before reuse.
+
+### Adjust Board
+
+`AdjustBoard` uses Pillow and keeps two sources:
+
+- `original_pil`: full-resolution source used for final rendering.
+- `preview_original_pil`: copy bounded to 1200 x 1200 for interactive updates.
+
+The preview timer coalesces control changes at 40 ms. Manual preview zoom acts
+only on the bounded preview, survives adjustment refreshes, and resets to Fit
+when navigating to another image.
+
+Available adjustments are brightness, contrast, gamma, exposure, sharpness,
+temperature, tint, hue, saturation, RGB channels, shadows, highlights,
+grayscale, invert, auto contrast, and equalize. Alpha is preserved where the
+pipeline supports it.
+
+Resize supports pixel/percent dimensions and Preserve Ratio, Stretch, Fit,
+Fill/Crop, and Pad geometry. Padding has a color selector. Resampling options
+are Automatic, Lanczos, sharper Lanczos, Bicubic, sharper Bicubic, Bilinear,
+Hamming, Nearest, and Box. Automatic uses Lanczos for reduction and Bicubic for
+enlargement; the sharper variants add a small unsharp mask.
+
+Remember settings and Remember resize are intentionally separate. Adjustment
+memory can persist in `config.json`; resize carryover is limited to the current
+Adjust Board session. The selected resampling method is persistent.
+
+O saves without closing or advancing, while Enter in numeric controls must not
+save. Normal save offers overwrite, Save As, and `_adj` copy. Auto-name writes:
+
+```text
+name_adj.ext
+name_adj2.ext
+name_adj3.ext
+```
+
+Copy saves mark the current edit signature as saved but keep the original as
+the navigation item. A copy added to the displayed folder is inserted into the
+thumbnail model but not into the active Adjust Board navigation snapshot.
+
+### Batch rename and convert
+
+Batch rename templates use:
+
+- `*` for the original basename.
+- One contiguous `#` run for numbering and zero-padding.
+- `\#` for a literal hash.
+
+The rename worker first moves every source to a unique `.a5rename-*.tmp`, then
+moves temporary files to final names. This supports swaps and case-only renames.
+Windows sharing violations 32/33 are retried with bounded backoff. On failure,
+the worker attempts rollback.
+
+Batch Convert runs in a `QThread`, supports PNG/JPEG/WebP output, optional
+rotate/flip, quality for JPEG/WebP, date preservation, and optional source
+deletion. It is a simpler pipeline than batch rotate and does not use the same
+atomic replacement helper. Treat changes to overwrite or deletion behavior as
+high risk.
+
+Conversion validates the complete output plan before writing: duplicate targets
+and outputs that would overwrite another selected source are rejected. Source
+deletion compares normalized paths and file identity so an in-place conversion
+cannot delete its own output. Escape and window-close are blocked while the
+conversion worker is running, and completion waits for the worker to exit.
+
+## 11. File Operations and Conflict Handling
+
+Single-file rename executes through a callback before the Rename dialog accepts.
+A destination collision or filesystem error leaves the dialog open with an
+inline message and the attempted name selected for correction. Only successful
+renames update the thumbnail model; Cancel preserves the original path.
+
+There are two related transfer paths:
+
+1. Copy To/Move To dialogs call `TransferCoordinator`. Preflight checks happen
+   in up to two daemon threads so a slow disk or network share does not block
+   image navigation. Plans are resolved in queue order. Conflicts open one
+   application-modal comparison dialog with source/destination previews and
+   Replace, Skip, Rename, and corresponding All actions. Suggested names use
+   `name-ren(1).ext`, incrementing existing suffixes without enumerating the
+   entire destination directory.
+2. Clipboard paste, drag/drop, and direct Send To folder actions currently use
+   `transfer_files_to_folder`, which submits the paths together through the
+   native Shell operation. When dropping onto a tree or folder-thumbnail
+   target, same-drive drops default to move, cross-drive drops default to copy,
+   Ctrl forces copy, and Shift forces move. A drop onto thumbnail-view empty
+   space is the existing copy-into-current-folder path.
+
+Exact transfer plans are split into non-overwrite and overwrite groups and sent
+through `SHFileOperationW` with double-null-terminated source/destination lists.
+Cancellation is represented as `None`, failure as `False`, and completion as
+`True`. Keep this distinction: a user cancellation must not produce a failure
+popup.
+
+File operations check the filesystem after Shell completion to determine which
+sources actually moved or copied. Successful local changes update thumbnail
+rows incrementally; avoid rescanning a large directory unless model state cannot
+be reconciled.
+
+Delete uses a custom confirmation followed by `SHFileOperationW`. Normal delete
+sets `FOF_ALLOWUNDO` for the Recycle Bin; Shift+Delete is permanent. Copy, move,
+delete, and batch rename retry sharing violations with short bounded backoff to
+allow Qt/Pillow readers to release handles.
+
+Thumbnail deletion includes selected folders through
+`selected_file_paths(include_folders=True)`; confirmation explicitly includes
+their contents. Other callers retain the existing file-only default.
+
+Clipboard interoperability uses file URLs plus Windows `Preferred DropEffect`
+and a private `application/x-a5imageviewer-cut` marker. It supports files and
+folders. Fullscreen Copy to Clipboard is separate and copies pixels.
+
+## 12. Windows Integration
+
+`utils/windows_shell.py` keeps optional Shell behavior isolated:
+
+- `ShellExecuteW` with `open`, `edit`, and `print` verbs.
+- `SystemParametersInfoW` for desktop wallpaper.
+- `SHGetKnownFolderPath(FOLDERID_SendTo)` for the current user's Send To folder.
+- `subprocess.list2cmdline` for safely quoting multiple paths passed to Send To
+  application targets.
+
+Send To enumeration deliberately supports ordinary folders plus `.lnk`, `.exe`,
+`.com`, `.bat`, and `.cmd` entries. COM-backed Shell handlers such as compressed
+ZIP, mail recipient, and desktop shortcuts are excluded. The command line is
+rejected above 30,000 characters.
+
+On non-Windows platforms, associated-program opening falls back to
+`QDesktopServices`; editor, print, wallpaper, Send To, and the core
+`SHFileOperationW` file-management path are Windows-specific. Cross-platform
+support is best-effort, not a current release guarantee.
+
+The installer registers a per-user ProgID and SupportedTypes for JPG/JPEG, PNG,
+BMP, WebP, GIF, and TIFF. Windows still controls the final default-app choice;
+the optional installer task opens the relevant Settings page.
+
+## 13. Configuration Model
+
+`utils/file_ops.py` owns the single `config.json`.
+
+- Source run: workspace root beside `main.py`.
+- Frozen onefile/onedir run: beside `sys.executable`.
+- The install/portable directory must therefore be writable for persistence.
+- Legacy slash styles are normalized on read; new recent/address/last-folder
+  writes use native normalized absolute paths.
+
+Important keys and defaults:
+
+| Key | Default / purpose |
+| --- | --- |
+| `recent_folders` | `[]`; Copy To/Move To history |
+| `address_folders` | `[]`; address bar history, capped at 20 |
+| `last_folder` | empty; startup restoration |
+| `favorite_folders` | ordered full paths |
+| `favorite_display_names` | normalized path to alias map |
+| `favorite_sort_settings` | favorite path to name/date/type order |
+| `startup_behavior` | `last_used`; alternative `empty` |
+| `thumbnail_size` | `200` pixels |
+| `ui_theme` | `dark`; also `medium_dark`, `light` |
+| `resource_profile` | `balanced`; also conservative/performance/custom |
+| `custom_thumbnail_workers` | `4`, clamped 1..8 |
+| `custom_thumbnail_cache_mb` | `2048`, clamped 256..5120 |
+| `custom_crop_prefetch_mb` | `512`, clamped 128..1024 |
+| `fullscreen_hud_visible` | `true` |
+| `viewer_default_mode` | `fullscreen`; also `windowed` or `last_used` |
+| `viewer_state` | validated last mode, normal geometry, maximized state, window monitor, and last viewer monitor |
+| `slideshow_mode` | `ordered`; alternative `random` |
+| `quality_jpeg`, `quality_webp` | `90` |
+| `convert_appendix` | `_result` |
+| `crop_ask_overwrite` | `true` |
+| `crop_auto_name_copies` | `false` |
+| `remember_adjustments` | `false` |
+| `adjustment_values` | persisted only when adjustment memory is enabled |
+| `adjust_auto_name_copies` | `false` |
+| `adjust_resampling` | `auto` |
+
+Resource presets request 2/4/8 thumbnail workers and 512/2048/5120 MiB caches,
+but effective workers are capped at `max(1, logical_cpu_count - 2)`. Crop
+prefetch uses one or two workers and 256/512/1024 MiB in the presets.
+
+The current configuration implementation is intentionally simple: each setter
+loads the whole JSON object, changes one field, and writes the whole file. There
+is no process lock, merge, temporary-file write, or atomic replace. Multiple app
+instances can all write it; the last writer can lose a recent update from
+another instance. A write interruption or truly overlapping write is also a
+possible corruption risk. `load_config` catches parse errors and returns a
+minimal default, so a subsequent write after corruption can replace old state.
+
+This is acceptable for the small, non-critical settings file under the current
+single-user usage pattern. If configuration durability is hardened later, use
+same-directory temporary write, flush/fsync where appropriate, and
+`os.replace`, then consider a small inter-process lock or merge strategy. Keep
+the public getter/setter API stable so UI modules do not learn the storage
+details.
+
+Session-only choices must remain non-persistent unless intentionally changed:
+
+- main edit prompt auto-save choice
+- Crop Board navigation save/discard choice
+- Adjust Board navigation save/discard choice
+- Convert overwrite-warning suppression
+- Adjust Board Remember resize state
+
+## 14. Themes and UI Conventions
+
+Theme behavior is centralized in `ui/theme.py`. `apply_theme` changes the
+application palette and stylesheet in place; it must not rebuild models, flush
+thumbnail caches, decode images, or change selection.
+
+Theme tokens cover surfaces, text, disabled state, selection, controls, focus,
+checkboxes, scrollbars, splitters, and thumbnail borders. Scrollbar arrows are
+small recolored standard Qt icons written to a process-local `QTemporaryDir`.
+
+Image canvases remain explicitly dark in every theme, and fullscreen remains
+black. Keep canvas selectors scoped so they do not force menus and dialogs dark
+under the Light theme.
+
+UI conventions established in the project:
+
+- Compact controls and stable dimensions are preferred.
+- Use existing Qt standard icons or the established local icon generators.
+- Context menus expose keyboard shortcuts near the action.
+- Buttons that create files repeatedly should give visible pressed feedback.
+- Important dialogs use mnemonic ampersands and explicit single-key handling
+  where focus behavior could otherwise be ambiguous.
+- Do not make Enter save from Adjust Board numeric fields.
+- Keep selection borders clear of thumbnail filename text.
+- Keep system folders visible while favorites scroll in two columns.
+- Theme app-owned dialogs; native Windows dialogs retain OS appearance.
+
+## 15. Concurrency and Performance Invariants
+
+These are the most important engineering constraints for future changes:
+
+1. Never mutate Qt widgets or models from a worker thread. Emit data and apply
+   it on the GUI thread.
+2. Every reusable asynchronous result needs a generation and/or file
+   fingerprint check. Folder changes, renames, saves, and thumbnail-size changes
+   can otherwise display stale content.
+3. Decode at the requested size when possible. Do not routinely decode full
+   images only to make thumbnails.
+4. Bound memory by byte cost, not only item count.
+5. Prioritize visible and adjacent content. Background completion is secondary
+   to interaction latency.
+6. Keep worker delivery backpressured. An unbounded signal queue can freeze the
+   UI even when decoding itself is threaded.
+7. Stop/pause readers before operations that require Windows to rename, move,
+   delete, or replace files.
+8. Prefer incremental thumbnail updates after a local operation. Full rescans
+   are expensive and disturb selection/scroll state.
+9. Preserve model order when collecting multi-selection paths. It defines batch
+   numbering, serial editor order, and Send To argument order.
+10. Navigation at the first/last item stops. Do not reintroduce wrapping unless
+    a separate explicit mode is designed.
+11. Keep conflict preflight asynchronous and avoid enumerating an entire large
+    destination folder merely to find one free rename.
+12. Parent modal dialogs to fullscreen when fullscreen is active, and restore
+    focus afterward.
+
+## 16. Test Organization
+
+| Test module | Primary coverage |
+| --- | --- |
+| `test_adjust_board.py` | effects, resize geometry/resampling, serial navigation, save naming, zoom |
+| `test_adjustment_settings.py` | persisted/clamped adjustment settings |
+| `test_appearance.py` | themes, favorites layout, repaint without reload |
+| `test_batch_operations.py` | rename parser/plans/rollback and atomic transforms |
+| `test_config_paths.py` | path normalization and frozen/source config location |
+| `test_convert_dialog.py` | conversion collisions, source deletion, and dialog worker lifetime |
+| `test_crop_transforms.py` | crop selection, transforms, prompts, shortcuts, naming |
+| `test_delete_files.py` | Shell operation batching, cancellation, sharing retries |
+| `test_dialogs.py` | split rename fields and Windows filename validation |
+| `test_favorites.py` | aliases and favorite-specific sort persistence |
+| `test_folder_previews.py` | delayed non-recursive mosaics and stale cancellation |
+| `test_fullscreen_hud.py` | HUD, pixel selection, zoom, focus, slideshow, shortcuts |
+| `test_fullscreen_moves.py` | queued moves, normalized paths, next-image selection, cancellation, and empty-folder exit |
+| `test_viewer_modes.py` | mode/settings persistence, geometry fallback, F11, resizing/zoom, and close cancellation |
+| `test_viewer_workflows.py` | folder deletion, browser synchronization, Space, fixed HUD, crop zoom/pan and cached navigation |
+| `test_text_files.py` | TXT filtering, external opening, mixed transfers/clipboard, conflicts, and incremental updates |
+| `test_main_window_batch_integration.py` | model synchronization and cross-component workflows |
+| `test_reader_lifetimes.py` | Windows file-handle release behavior |
+| `test_save_prompt.py` | main edit save/discard session behavior |
+| `test_startup_activation.py` | command-line file/folder activation and titles |
+| `test_thumbnail_filtering.py` | type filters, PDF boundary, video labels |
+| `test_transfer_conflicts.py` | async preflight and conflict choices/naming |
+| `test_windows_shell.py` | Shell verbs, Send To, print, wallpaper, platform guards |
+
+For a bug fix, add a focused regression close to the owning module. For changes
+touching `MainWindow`, file identity, selection, worker lifetime, or save/move
+behavior, also run the complete suite.
+
+No automated visual snapshot suite exists. For layout/theme changes, supplement
+unit tests with manual checks at common Windows display scales and with Dark,
+Medium Dark, and Light themes.
+
+## 17. Safe Change Recipes
+
+### Add a new persisted setting
+
+1. Add validated getter/setter functions in `utils/file_ops.py` with a safe
+   default for missing/invalid data.
+2. Keep old config files readable without migration when possible.
+3. Bind the UI in its owning dialog/module.
+4. Test default, invalid fallback, persistence, and any live application effect.
+
+### Add a new thumbnail-visible file type
+
+1. Decide whether it is `image`, `video`, `folder`, or needs a new kind.
+2. Update scanning, filter categories, placeholder icon, labels, status data,
+   context menu guards, and editable snapshots.
+3. Confirm the decoder releases file handles.
+4. Test visibility independently from existing categories.
+
+### Add an image-changing operation
+
+1. Decide whether it is in-memory single-image, serial editor, or batch work.
+2. Route all displayed pixmap changes through the existing viewer helpers so
+   fullscreen HUD/selection state stays correct.
+3. Mark or baseline dirty state correctly.
+4. Pause competing readers before overwriting.
+5. Refresh only affected thumbnails and reconcile date sorting if mtime changes.
+6. Test preview, fullscreen, navigation prompt, failed save, and alpha/metadata
+   behavior where relevant.
+
+### Add a background worker
+
+1. Define who owns shutdown and connect it to application teardown.
+2. Add cancellation and stale-result rejection before adding concurrency.
+3. Bound task admission and memory.
+4. Use low priority for speculative/background work.
+5. Add a test that changes folder/generation while a result is in flight.
+
+### Change file transfer behavior
+
+1. Preserve multi-selection model order.
+2. Distinguish cancel from failure.
+3. Release readers before moving/replacing/deleting.
+4. Keep preflight off the GUI thread and dialogs on it.
+5. Verify local disk, missing source/destination, conflicts, rename numbering,
+   fullscreen current-path handling, and partial success.
+
+## 18. Known Constraints and Maintenance Notes
+
+- `ui/main_window.py` is over 3000 lines and is the main architectural pressure
+  point. Extract only cohesive services with clear ownership; broad rewrites
+  risk breaking tightly coordinated selection and fullscreen behavior.
+- Configuration writes are not atomic and are not locked across instances.
+- Core file copy/move/delete uses the legacy `SHFileOperationW` API rather than
+  full COM `IFileOperation` integration.
+- Send To intentionally omits COM Shell handlers.
+- The application has no persistent thumbnail database; reopening a folder can
+  require decoding again.
+- PDF support depends on what the Qt image stack can decode and is view-only.
+- Video support depends on the installed Qt Multimedia/platform codecs.
+- Animated/multi-frame editing is limited; batch transform refuses it, while
+  simpler editor paths may flatten to a single frame.
+- Metadata preservation differs between save paths. Batch rotate is the most
+  deliberate; QPixmap saves and Adjust/Crop/Convert do not promise complete
+  metadata round-tripping.
+- The portable and installer executables are unsigned, so SmartScreen warnings
+  are expected.
+- Error reporting is mostly modal dialogs plus a few `print` calls. There is no
+  structured logging system.
+- `utils/image_ops.py` overlaps some newer UI-owned editing logic and should not
+  automatically be treated as the canonical path for new features.
+
+## 19. Developer/Agent Completion Checklist
+
+Before considering a change complete:
+
+- Read the affected module and its tests before editing.
+- Preserve unrelated workspace changes.
+- Check ownership of current path, selection, model roles, and fullscreen state.
+- Check whether a worker or decoder still holds the target file.
+- Keep Windows-only calls isolated and provide a deliberate non-Windows result.
+- Add focused regression coverage.
+- Run `py_compile` for changed Python modules.
+- Run the focused test module, then the full suite for cross-component changes.
+- For UI changes, inspect all three themes and a narrow/wide layout.
+- For image changes, verify preview, fullscreen, save failure, and thumbnail
+  refresh behavior.
+- For build/release changes, verify both BAT files, installer staging, output
+  paths, version metadata, and config preservation.
+
+The best default is a small, tested change that follows an existing ownership
+boundary. Responsiveness and predictable file behavior matter more here than a
+larger abstraction or a longer feature list.

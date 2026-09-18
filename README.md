@@ -121,6 +121,33 @@ python -m venv .venv
 Application preferences and recent paths are stored in the local `config.json`.
 That file is intentionally not tracked.
 
+## Windowed viewing and caption files
+
+In Settings, **Default image view** offers Fullscreen, Windowed, or Remember last
+used. Press **F11** in the image viewer (or use its context menu) to switch modes.
+Windowed viewing has the standard Windows border and controls; restore it to
+resize or move it to another monitor. Its size, position, monitor, and maximized
+state are remembered. Fullscreen remains the default for existing settings.
+
+In either viewer mode, **Space** advances to the next image. **Backspace** or
+**Show in browser** selects and scrolls to the displayed image in the thumbnail
+browser without closing the viewer. Escape still returns to the image where
+viewing started; Enter closes on the displayed image. The filename/resolution
+overlay stays fixed in the top-left corner while zooming and panning.
+
+Crop Board provides **+ / -**, **Ctrl+mouse wheel**, **\*** (Fit), and **/**
+(actual size) zoom controls. Right-drag pans; left-drag selects a crop. Moving to
+another image resets zoom to Fit and retains the existing prefetch path.
+
+Selected folders in the thumbnail view can be deleted with **Del** (Recycle Bin)
+or **Shift+Del** (permanent), after confirmation. Folder contents are included.
+
+To work with captioned datasets, enable **Show > Text files (.txt)**. Select images
+and captions together for Copy To, Move To, or clipboard operations, with the
+usual filename-conflict choices. TXT files show a file icon without a preview;
+double-click opens the associated application. Text visibility resets to off
+when the application restarts, and captions are selected manually.
+
 ## Building Windows executables
 
 Run `build-exe.bat` for the portable executable or `build-installer.bat` for the
@@ -130,6 +157,8 @@ Inno Setup 6 or 7.
 
 Build results are written to the local `output_exe` directory. That directory is
 ignored by Git; distributable builds belong on the GitHub Releases page.
+The portable build creates `!A5ImageViewer.exe`. For release distribution,
+rename a copy to `A5ImageViewer-Portable-1.0.0.exe`.
 
 The build scripts invoke PyInstaller directly. The local `PyToExe` directory and
 third-party conversion frontend are not used or included.
@@ -141,6 +170,10 @@ The test suite uses Python's standard `unittest` runner:
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
+
+For architecture, module ownership, performance constraints, configuration,
+Windows integration, testing strategy, and release maintenance, see
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Feedback
 

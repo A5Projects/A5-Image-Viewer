@@ -436,6 +436,7 @@ class ThumbnailView(QListView):
         self.placeholder_icon = self._create_placeholder_icon("image")
         self.video_icon = self._create_placeholder_icon("video")
         self.folder_icon = self._create_placeholder_icon("folder")
+        self.text_icon = self._create_placeholder_icon("text")
         self.files = []
         self.path_items = {}
         self.workers = []
@@ -457,6 +458,7 @@ class ThumbnailView(QListView):
         self.show_images = True
         self.show_pdfs = True
         self.show_videos = False
+        self.show_text = False
         self.show_folders = True
         self.load_generation = 0
         self.visible_item_count = 0
@@ -513,12 +515,13 @@ class ThumbnailView(QListView):
         
     def load_folder(self, folder_path, sort_key="name", reverse=False,
                     show_images=True, show_videos=False, show_folders=True,
-                    show_pdfs=True):
+                    show_pdfs=True, show_text=False):
         self.load_generation += 1
         self._stop_thumbnail_workers()
 
         self.show_images = show_images
         self.show_pdfs = show_pdfs
+        self.show_text = show_text
         self.show_videos = show_videos
         self.show_folders = show_folders
         files = self._scan_files(folder_path, sort_key, reverse)
@@ -1092,9 +1095,10 @@ class ThumbnailView(QListView):
         self.apply_filter()
 
     def set_kind_visibility(self, show_images=True, show_videos=False,
-                            show_folders=True, show_pdfs=True):
+                            show_folders=True, show_pdfs=True, show_text=False):
         self.show_images = show_images
         self.show_pdfs = show_pdfs
+        self.show_text = show_text
         self.show_videos = show_videos
         self.show_folders = show_folders
         self.apply_filter()
@@ -1114,6 +1118,7 @@ class ThumbnailView(QListView):
                 (kind == "image" and not is_pdf and self.show_images) or
                 (is_pdf and self.show_pdfs) or
                 (kind == "video" and self.show_videos) or
+                (kind == "text" and self.show_text) or
                 (kind == "folder" and self.show_folders)
             )
             text_visible = (
@@ -1167,6 +1172,8 @@ class ThumbnailView(QListView):
                         ext = ext[1:].lower()
                         if ext == "pdf" and self.show_pdfs:
                             kind = "image"
+                        elif ext == "txt" and self.show_text:
+                            kind = "text"
                         elif (
                             ext != "pdf" and
                             ext in supported_formats and
@@ -1220,6 +1227,8 @@ class ThumbnailView(QListView):
         return {"mp4", "m4v", "mov", "webm", "mkv", "avi", "wmv"}
 
     def _icon_for_kind(self, kind):
+        if kind == "text":
+            return self.text_icon
         if kind == "video":
             return self.video_icon
         if kind == "folder":
@@ -1295,6 +1304,6 @@ class ThumbnailView(QListView):
             font.setPointSize(22)
             font.setBold(True)
             painter.setFont(font)
-            painter.drawText(img.rect(), Qt.AlignmentFlag.AlignCenter, "IMG")
+            painter.drawText(img.rect(), Qt.AlignmentFlag.AlignCenter, "TXT" if kind == "text" else "IMG")
         painter.end()
         return QIcon(QPixmap.fromImage(img))

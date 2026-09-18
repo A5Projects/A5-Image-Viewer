@@ -729,7 +729,11 @@ class MainWindowBatchIntegrationTests(unittest.TestCase):
                     patch("ui.main_window.RenameDialog") as dialog_class,
                     patch.object(window, "load_current_folder") as reload_folder,
                 ):
-                    dialog_class.return_value.exec.return_value = 1
+                    def accept_rename():
+                        callback = dialog_class.call_args.kwargs["rename_callback"]
+                        self.assertEqual(callback("new-name.webp"), "")
+                        return 1
+                    dialog_class.return_value.exec.side_effect = accept_rename
                     dialog_class.return_value.new_filename = "new-name.webp"
                     window.rename_file()
 

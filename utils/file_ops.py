@@ -76,6 +76,41 @@ def save_config(config: Dict[str, Any]):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
+
+def get_viewer_default_mode():
+    value = load_config().get("viewer_default_mode", "fullscreen")
+    return value if value in ("fullscreen", "windowed", "last_used") else "fullscreen"
+
+
+def set_viewer_default_mode(mode):
+    config = load_config()
+    config["viewer_default_mode"] = mode if mode in ("fullscreen", "windowed", "last_used") else "fullscreen"
+    save_config(config)
+
+
+def get_viewer_state():
+    state = load_config().get("viewer_state", {})
+    if not isinstance(state, dict):
+        state = {}
+    geometry = state.get("geometry")
+    if not (isinstance(geometry, list) and len(geometry) == 4
+            and all(type(value) is int and abs(value) <= 100000 for value in geometry)
+            and geometry[2] > 0 and geometry[3] > 0):
+        geometry = None
+    return {
+        "mode": "windowed" if state.get("mode") == "windowed" else "fullscreen",
+        "geometry": geometry,
+        "maximized": state.get("maximized", True) is not False,
+        "screen": state.get("screen", "") if isinstance(state.get("screen", ""), str) else "",
+        "last_screen": state.get("last_screen", "") if isinstance(state.get("last_screen", ""), str) else "",
+    }
+
+
+def set_viewer_state(state):
+    config = load_config()
+    config["viewer_state"] = dict(state)
+    save_config(config)
+
 def normalize_folder_path(folder_path: str) -> str:
     if not isinstance(folder_path, str) or not folder_path.strip():
         return ""
