@@ -51,6 +51,10 @@ Download the current files from the
 Download filenames stay the same between releases. The release tag and About
 window identify the update. Neither executable requires Python.
 
+If the September 22 download fails on startup with a `QtWidgets` DLL error,
+download the corrected release (`v1.0.0-20260922.1` or later) and run Setup
+again, or replace the portable EXE. Setup preserves your `config.json`.
+
 ## Screenshots
 
 The interface should be familiar to anyone who has used an image viewer. Check

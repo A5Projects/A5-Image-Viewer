@@ -45,7 +45,7 @@ echo Building the current A5ImageViewer workspace...
 echo.
 
 pushd "%ROOT_DIR%" >nul
-"%BUILD_PYTHON%" -m PyInstaller ^
+"%BUILD_PYTHON%" "%ROOT_DIR%scripts\build_app.py" ^
     --onefile ^
     --windowed ^
     --name "!A5ImageViewer" ^
@@ -70,6 +70,12 @@ if not "%BUILD_EXIT%"=="0" (
 
 if not exist "%EXE_FILE%" (
     set "BUILD_ERROR=PyInstaller completed, but the expected executable was not created: %EXE_FILE%"
+    goto :failure
+)
+
+"%BUILD_PYTHON%" "%ROOT_DIR%scripts\check_executable.py" "%EXE_FILE%"
+if errorlevel 1 (
+    set "BUILD_ERROR=The portable executable failed its startup check."
     goto :failure
 )
 

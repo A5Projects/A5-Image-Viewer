@@ -58,7 +58,7 @@ if not exist "%SPEC_DIR%" mkdir "%SPEC_DIR%"
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 pushd "%ROOT_DIR%" >nul
-"%BUILD_PYTHON%" -m PyInstaller ^
+"%BUILD_PYTHON%" "%ROOT_DIR%scripts\build_app.py" ^
     --onedir ^
     --windowed ^
     --name "A5ImageViewer" ^
@@ -88,6 +88,12 @@ if not exist "%STAGING_DIR%\A5ImageViewer\A5ImageViewer.exe" (
 
 echo.
 echo Compiling the Windows installer...
+"%BUILD_PYTHON%" "%ROOT_DIR%scripts\check_executable.py" "%STAGING_DIR%\A5ImageViewer\A5ImageViewer.exe"
+if errorlevel 1 (
+    set "BUILD_ERROR=The installed application failed its startup check."
+    goto :failure
+)
+
 "%INNO_COMPILER%" /DMyAppVersion=%APP_VERSION% "%INSTALLER_SCRIPT%"
 set "BUILD_EXIT=%ERRORLEVEL%"
 if not "%BUILD_EXIT%"=="0" (

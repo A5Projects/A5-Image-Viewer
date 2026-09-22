@@ -1,10 +1,5 @@
 import os
 import sys
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
-from ui.main_window import MainWindow
-from ui.theme import apply_theme
-from utils.file_ops import get_ui_theme
 
 APP_NAME = "A5ImageViewer"
 ICON_FILE = "A5ImageViewer.ico"
@@ -30,6 +25,12 @@ def startup_path_from_arguments(arguments):
     return None
 
 def main():
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QIcon
+    from ui.main_window import MainWindow
+    from ui.theme import apply_theme
+    from utils.file_ops import get_ui_theme
+
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(resource_path(ICON_FILE)))
@@ -45,4 +46,8 @@ def main():
     sys.exit(app.exec())
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-test":
+        # Enter before importing Qt so a broken frozen DLL reports a build failure.
+        from utils.startup_check import run_startup_check
+        sys.exit(run_startup_check(sys.argv[2]))
     main()

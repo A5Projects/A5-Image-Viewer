@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-22 — v1.0.0-20260922.1
+
+- Fixed the packaged application failing at startup with a QtWidgets DLL error.
+  Builds now exclude unrelated tools from their DLL search path, preventing an
+  incompatible ICU library from replacing the Windows dependency used by Qt.
+- Both build scripts now run the generated application through a startup check
+  before producing release files. It checks the native Windows Qt plugin,
+  browser rendering, PNG/JPEG decoding, and bundled About documents using
+  temporary configuration.
+
 ## 2026-09-22 — v1.0.0-20260922
 
 - Added About and F1 help with shortcuts grouped by window, the GPLv3 license,

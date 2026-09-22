@@ -5,7 +5,7 @@ A5ImageViewer. It describes the architecture, important implementation choices,
 build and test workflow, and the behavioral contracts that are easy to break
 when changing the application.
 
-It reflects the September 18, 2026 update (`v1.0.0-20260918`).
+It reflects the September 22, 2026 startup fix (`v1.0.0-20260922.1`).
 Read [README.md](README.md) first for the product goals and user
 facing overview.
 
@@ -87,7 +87,7 @@ fullscreen. Passing a folder opens the browser at that folder.
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The current suite contains 206 tests. Test modules set
+The current suite contains 209 tests. Test modules set
 `QT_QPA_PLATFORM=offscreen` where GUI construction is needed. Tests that write
 configuration should redirect `utils.file_ops.CONFIG_FILE` to a temporary
 directory and restore it during teardown. Never intentionally run a settings
@@ -111,6 +111,24 @@ Useful focused commands:
 Both scripts call `prepare-build-env.bat`, which creates/reuses the root
 `.venv` and installs `requirements-build.txt` when PyQt6, Pillow, or
 PyInstaller is missing.
+
+`scripts/build_app.py` runs PyInstaller with a restricted Windows `PATH`:
+Windows system directories and the selected Python installation. It clears
+external Python/Qt import paths so tools such as Poppler cannot contribute an
+incompatible `icuuc.dll` or other libraries. Qt's own DLLs are collected from
+the environment's PyQt6 package. Do not run release builds with an unrestricted
+developer-tool `PATH`.
+
+Both build scripts run `scripts/check_executable.py` against the actual frozen
+EXE before copying the portable release file or compiling the installer.
+The internal `--self-test REPORT.json` command checks Qt imports, the Windows
+platform plugin, browser rendering, PNG/JPEG decoding, and About resources.
+It opens no visible windows and uses temporary configuration. A failure stops
+the build and prints the captured traceback. To check an existing build:
+
+```powershell
+.venv\Scripts\python.exe scripts\check_executable.py output_exe\A5ImageViewer-Portable.exe
+```
 
 Build outputs go to `output_exe`:
 
