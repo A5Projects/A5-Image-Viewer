@@ -91,13 +91,17 @@ class ViewerWorkflowTests(unittest.TestCase):
         QTest.keyClick(viewer.viewer, Qt.Key.Key_Escape)
         self.assertEqual(self.window.thumbnail_view.currentIndex().data(PATH_ROLE), self.paths[0])
 
-    def test_sync_button_preserves_unsaved_pixels_and_enter_selection(self):
+    def test_sync_menu_preserves_unsaved_pixels_and_enter_selection(self):
         viewer = self.open_viewer()
         self.window.navigate_fullscreen(1)
         self.window.rotate_image_90()
         self.assertTrue(self.window.image_modified)
-        with patch.object(self.window, "prompt_save_changes") as prompt:
-            viewer.sync_browser_button.click()
+        def choose_sync(menu, *args):
+            next(action for action in menu.actions()
+                 if action.text().startswith("Show in browser\t")).trigger()
+        with patch.object(self.window, "prompt_save_changes") as prompt, \
+                patch("ui.fullscreen_viewer.QMenu.exec", choose_sync):
+            viewer.show_context_menu(QPoint(0, 0))
         prompt.assert_not_called()
         self.assertTrue(self.window.image_modified)
         self.assertEqual(self.window.preview_viewer.pixmap_item.pixmap().size(), viewer.viewer.pixmap_item.pixmap().size())

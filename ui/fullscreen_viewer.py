@@ -1,11 +1,12 @@
 import os
 import random
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QMenu, QApplication, QLabel, QGraphicsView, QToolButton
+    QDialog, QVBoxLayout, QMenu, QApplication, QLabel, QGraphicsView
 )
 from PyQt6.QtCore import Qt, QEvent, QTimer, QRect, QRectF, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QPixmap, QFontMetrics
 from ui.image_viewer import ImageViewer
+from ui.about_dialog import install_about_shortcut
 from ui.crop_board import ResizableRectItem
 from utils.file_ops import (
     get_fullscreen_hud_visible, set_fullscreen_hud_visible,
@@ -233,6 +234,7 @@ class FullScreenViewer(QDialog):
         self.viewer.installEventFilter(self)
         self.viewer.viewport().installEventFilter(self)
         self.viewer.context_menu_requested.connect(self.show_context_menu)
+        install_about_shortcut(self, "Image viewer (fullscreen / windowed)")
         self.layout.addWidget(self.viewer)
 
         self.hud_label = QLabel(self)
@@ -252,12 +254,6 @@ class FullScreenViewer(QDialog):
         self._hud_width = 0
         self._hud_height = 0
         self.hud_label.setVisible(self.hud_visible)
-        self.sync_browser_button = QToolButton(self)
-        self.sync_browser_button.setText("Show in browser")
-        self.sync_browser_button.setToolTip("Select this image in the thumbnail browser (Backspace)")
-        self.sync_browser_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.sync_browser_button.clicked.connect(self.sync_browser)
-        self.sync_browser_button.adjustSize()
         
         self.current_image_path = None
         self.slideshow_mode = get_slideshow_mode()
@@ -521,18 +517,13 @@ class FullScreenViewer(QDialog):
 
     def refresh_hud(self):
         origin = self.viewer.viewport().mapTo(self, QPoint(0, 0))
-        self.sync_browser_button.move(
-            origin.x() + max(12, self.viewer.viewport().width() - self.sync_browser_button.width() - 12),
-            origin.y() + 12,
-        )
-        self.sync_browser_button.raise_()
         if not self.hud_visible:
             self.hud_label.hide()
             return
 
         viewport_width = max(1, self.viewer.viewport().width())
         maximum_width = max(80, min(
-            viewport_width - self.sync_browser_button.width() - 36,
+            viewport_width - 24,
             int(viewport_width * 0.6),
         ))
         text_width = max(32, maximum_width - 16)
@@ -545,7 +536,9 @@ class FullScreenViewer(QDialog):
         if self._hud_width and self._hud_height:
             details = f"{self._hud_format}  {self._hud_width} x {self._hud_height}"
         else:
-            details = f"{self._hud_format}  resolution unavailable"
+            details = f"{self._hud_format}  " + (
+                "unable to load image" if self.viewer.last_error else "resolution unavailable"
+            )
         self.hud_label.setMaximumWidth(maximum_width)
         self.hud_label.setText(f"{filename}\n{details}")
         self.hud_label.adjustSize()
@@ -762,6 +755,10 @@ class FullScreenViewer(QDialog):
         slideshow_stop_requested = False
 
         menu = QMenu(self)
+        # Explicit item padding avoids the native style's oversized label-to-
+        # shortcut gap while leaving space for checks and submenu arrows.
+        menu.setStyleSheet("QMenu::item { padding: 5px 24px 5px 8px; }")
+        menu.setToolTipsVisible(True)
         mode_action = menu.addAction("Windowed\tF11" if self.display_mode == "fullscreen" else "Fullscreen\tF11")
         mode_action.triggered.connect(self.toggle_display_mode)
         sync_action = menu.addAction("Show in browser\tBackspace")
@@ -808,11 +805,13 @@ class FullScreenViewer(QDialog):
                 slideshow_menu.addAction(stop_action)
             menu.addSeparator()
 
-            next_action = QAction("Next Image\tSpace / PgDown / N", self)
+            next_action = QAction("Next Image\tSpace", self)
+            next_action.setToolTip("Next image: Space, PgDown, N, or mouse wheel down")
             next_action.triggered.connect(self.next_image)
             menu.addAction(next_action)
             
-            prev_action = QAction("Previous Image\tPgUp / P", self)
+            prev_action = QAction("Previous Image\tPgUp", self)
+            prev_action.setToolTip("Previous image: PgUp, P, or mouse wheel up")
             prev_action.triggered.connect(self.prev_image)
             menu.addAction(prev_action)
             

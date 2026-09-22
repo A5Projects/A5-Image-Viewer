@@ -1,4 +1,5 @@
 import os
+from ui.about_dialog import install_about_shortcut
 from collections import deque, OrderedDict
 from threading import Condition
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox, 
@@ -11,9 +12,11 @@ from PyQt6.QtGui import (QPixmap, QColor, QPen, QShortcut, QKeySequence, QAction
 from utils.file_ops import (get_crop_ask_overwrite, set_crop_ask_overwrite,
                             get_crop_auto_name_copies,
                             set_crop_auto_name_copies)
+from utils.image_loading import ImageLoadError, read_full_image, MAX_PREFETCH_IMAGE_BYTES
 
 
 def _read_prefetch_image(path, max_item_bytes):
+    max_item_bytes = min(max_item_bytes, MAX_PREFETCH_IMAGE_BYTES)
     stat = os.stat(path)
     fingerprint = (stat.st_size, stat.st_mtime_ns)
     reader = QImageReader(path)
@@ -484,6 +487,7 @@ class CropBoard(QDialog):
                  navigation_paths=None, prefetch_service=None):
         super().__init__(parent)
         self.adjacent_image_cb = adjacent_image_cb
+        install_about_shortcut(self, "Crop Board")
         self.navigation_paths = list(navigation_paths or [])
         self.navigation_positions = {
             path: index for index, path in enumerate(self.navigation_paths)
@@ -751,9 +755,7 @@ class CropBoard(QDialog):
         cached = self._take_prefetched_image(image_path)
         if cached is not None:
             return QPixmap.fromImage(cached)
-        reader = QImageReader(image_path)
-        reader.setAutoTransform(False)
-        return QPixmap.fromImage(reader.read())
+        return QPixmap.fromImage(read_full_image(image_path))
 
     def adjacent_path(self, image_path, direction):
         if self.navigation_paths:
@@ -884,8 +886,13 @@ class CropBoard(QDialog):
         return reply == QMessageBox.StandardButton.Yes
 
     def load_image(self, image_path):
+        try:
+            pixmap = self.read_pixmap(image_path)
+        except ImageLoadError as error:
+            QMessageBox.warning(self, "Open Image", str(error))
+            return False
         self.image_path = image_path
-        self.original_pixmap = self.read_pixmap(image_path)
+        self.original_pixmap = pixmap
         self.current_pixmap = self.original_pixmap
         self.history.clear()
         self.pixmap_item.setPixmap(self.current_pixmap)
@@ -899,6 +906,7 @@ class CropBoard(QDialog):
         self.setWindowTitle(f"Crop Board - {os.path.basename(image_path)}")
         self.image_changed.emit(image_path)
         self.schedule_prefetch()
+        return True
 
     def open_adjacent_image(self, direction):
         if not self.navigation_paths and not self.adjacent_image_cb:

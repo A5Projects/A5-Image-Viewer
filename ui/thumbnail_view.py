@@ -1105,6 +1105,7 @@ class ThumbnailView(QListView):
 
     def apply_filter(self):
         visible_count = 0
+        terms = self.filter_text.split()
         for row in range(self.thumbnail_model.rowCount()):
             item = self.thumbnail_model.item(row)
             if item is None:
@@ -1123,9 +1124,7 @@ class ThumbnailView(QListView):
             )
             text_visible = (
                 kind == "folder" or
-                not self.filter_text or
-                self.filter_text in name or
-                self.filter_text in ext
+                all(term in name or term in ext.lower() for term in terms)
             )
             visible = kind_visible and text_visible
             self.setRowHidden(row, not visible)

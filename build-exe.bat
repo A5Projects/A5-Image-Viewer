@@ -10,6 +10,7 @@ set "OUTPUT_DIR=%ROOT_DIR%output_exe"
 set "WORK_DIR=%ROOT_DIR%build\standalone"
 set "SPEC_DIR=%ROOT_DIR%build\spec"
 set "EXE_FILE=%OUTPUT_DIR%\!A5ImageViewer.exe"
+set "RELEASE_EXE_FILE=%OUTPUT_DIR%\A5ImageViewer-Portable.exe"
 
 if not exist "%BUILD_ENV_SCRIPT%" (
     set "BUILD_ERROR=The build environment helper was not found at: %BUILD_ENV_SCRIPT%"
@@ -51,6 +52,8 @@ pushd "%ROOT_DIR%" >nul
     --icon "%ICON_FILE%" ^
     --version-file "%VERSION_FILE%" ^
     --add-data "%ICON_FILE%;." ^
+    --add-data "%ROOT_DIR%LICENSE;." ^
+    --add-data "%ROOT_DIR%CHANGELOG.md;." ^
     --distpath "%OUTPUT_DIR%" ^
     --workpath "%WORK_DIR%" ^
     --specpath "%SPEC_DIR%" ^
@@ -70,9 +73,16 @@ if not exist "%EXE_FILE%" (
     goto :failure
 )
 
+copy /b /y "%EXE_FILE%" "%RELEASE_EXE_FILE%" >nul
+if errorlevel 1 (
+    set "BUILD_ERROR=The portable executable was built, but its release copy could not be created: %RELEASE_EXE_FILE%"
+    goto :failure
+)
+
 echo.
 echo Build completed successfully:
 echo %EXE_FILE%
+echo %RELEASE_EXE_FILE%
 goto :finish
 
 :failure

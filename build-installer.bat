@@ -65,6 +65,8 @@ pushd "%ROOT_DIR%" >nul
     --icon "%ICON_FILE%" ^
     --version-file "%VERSION_FILE%" ^
     --add-data "%ICON_FILE%;." ^
+    --add-data "%ROOT_DIR%LICENSE;." ^
+    --add-data "%ROOT_DIR%CHANGELOG.md;." ^
     --distpath "%STAGING_DIR%" ^
     --workpath "%WORK_DIR%" ^
     --specpath "%SPEC_DIR%" ^
@@ -93,7 +95,7 @@ if not "%BUILD_EXIT%"=="0" (
     goto :failure
 )
 
-set "SETUP_FILE=%OUTPUT_DIR%\A5ImageViewer-Setup-%APP_VERSION%.exe"
+set "SETUP_FILE=%OUTPUT_DIR%\A5ImageViewer-Setup.exe"
 if not exist "%SETUP_FILE%" (
     set "BUILD_ERROR=Setup completed, but the expected installer was not created: %SETUP_FILE%"
     goto :failure

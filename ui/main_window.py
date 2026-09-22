@@ -30,6 +30,9 @@ from utils.file_ops import (copy_files as copy_files_batch, move_files as move_f
                             set_last_folder, get_last_folder, get_startup_behavior, get_thumbnail_size,
                             get_resource_settings, get_ui_theme)
 from utils import windows_shell
+from ui.about_dialog import install_about_shortcut
+from utils.application_launch import start_new_instance
+from utils.image_loading import ImageLoadError, apply_image_loading_settings
 
 APP_NAME = "A5ImageViewer"
 ICON_FILE = "A5ImageViewer.ico"
@@ -293,7 +296,9 @@ class VideoFrameGrabber(QObject):
 
 class MainWindow(QMainWindow):
     def __init__(self, startup_path=None):
+        apply_image_loading_settings()
         super().__init__()
+        install_about_shortcut(self, "Browser")
         if QApplication.instance().property("ui_theme") is None:
             apply_theme(get_ui_theme())
         self.startup_path = (
@@ -330,6 +335,17 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.toolbar.addWidget(spacer)
+
+        self.toolbar.addSeparator()
+        self.new_instance_action = QAction(
+            QIcon(self.resource_path(ICON_FILE)),
+            "New instance", self,
+        )
+        self.new_instance_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.new_instance_action.setToolTip("New instance (Ctrl+Shift+N)")
+        self.new_instance_action.triggered.connect(lambda checked=False: self.open_new_instance())
+        self.toolbar.addAction(self.new_instance_action)
+        self.toolbar.addSeparator()
         
         self.add_toolbar_action("settings", "Settings", "S", self.open_settings_dialog)
 
@@ -353,21 +369,32 @@ class MainWindow(QMainWindow):
 
         self.sort_combo = QComboBox()
         self.sort_combo.setToolTip("Sort thumbnails")
-        self.sort_combo.setFixedWidth(170)
-        self.sort_combo.view().setMinimumWidth(170)
-        self.sort_combo.addItem("Name A-Z", ("name", False))
-        self.sort_combo.addItem("Name Z-A", ("name", True))
-        self.sort_combo.addItem("Date Old-New", ("date", False))
-        self.sort_combo.addItem("Date New-Old", ("date", True))
-        self.sort_combo.addItem("Type A-Z", ("type", False))
-        self.sort_combo.addItem("Type Z-A", ("type", True))
+        self.sort_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.sort_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        for label, data, description in (
+            ("Name ↑", ("name", False), "Name: A–Z"),
+            ("Name ↓", ("name", True), "Name: Z–A"),
+            ("Date ↑", ("date", False), "Date: oldest first"),
+            ("Date ↓", ("date", True), "Date: newest first"),
+            ("Type ↑", ("type", False), "Type: A–Z"),
+            ("Type ↓", ("type", True), "Type: Z–A"),
+        ):
+            self.sort_combo.addItem(label, data)
+            self.sort_combo.setItemData(self.sort_combo.count() - 1, description, Qt.ItemDataRole.ToolTipRole)
+        # The popup reserves a checkmark column that the closed control does not.
+        self.sort_combo.view().setMinimumWidth(self.sort_combo.sizeHint().width() + 24)
         self.sort_combo.currentIndexChanged.connect(self.on_sort_changed)
         address_layout.addWidget(self.sort_combo)
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter")
+        self.filter_edit.setToolTip(
+            "Filter filenames: all space-separated words must match, in any order.\n"
+            "Example: krea2 345 png\n"
+            "Case-insensitive; folders remain visible for navigation."
+        )
         self.filter_edit.setClearButtonEnabled(True)
-        self.filter_edit.setMaximumWidth(170)
+        self.filter_edit.setFixedWidth(round(min(170, self.filter_edit.sizeHint().width()) * 1.5))
         self.filter_edit.textChanged.connect(self.on_filter_changed)
         address_layout.addWidget(self.filter_edit)
 
@@ -998,6 +1025,17 @@ class MainWindow(QMainWindow):
         }
         return path_map.get(name)
 
+    def open_new_instance(self, folder_path=None):
+        try:
+            start_new_instance(folder_path if folder_path is not None else self.current_folder_path)
+        except OSError as error:
+            QMessageBox.warning(self, "New instance", str(error))
+
+    def add_new_instance_folder_action(self, menu, folder_path):
+        action = menu.addAction("Open in new instance")
+        action.triggered.connect(lambda checked=False: self.open_new_instance(folder_path))
+        return action
+
     def show_quick_access_context_menu(self, pos):
         item = self.quick_access_list.itemAt(pos)
         if not item:
@@ -1012,6 +1050,7 @@ class MainWindow(QMainWindow):
             lambda: self.open_folder_in_file_explorer(folder_path)
         )
         menu.addAction(open_action)
+        self.add_new_instance_folder_action(menu, folder_path)
         menu.exec(self.quick_access_list.viewport().mapToGlobal(pos))
 
     def load_favorites_list(self):
@@ -1062,6 +1101,7 @@ class MainWindow(QMainWindow):
             lambda: self.open_folder_in_file_explorer(folder_path)
         )
         menu.addAction(open_action)
+        self.add_new_instance_folder_action(menu, folder_path)
         menu.addSeparator()
 
         rename_action = QAction("Rename Display Name...", self)
@@ -1112,6 +1152,7 @@ class MainWindow(QMainWindow):
         menu.addAction(open_action)
 
         add_action = QAction("Add to Favorites", self)
+        self.add_new_instance_folder_action(menu, folder_path)
         add_action.triggered.connect(lambda: self.add_folder_to_favorites(folder_path))
         menu.addAction(add_action)
         menu.exec(self.tree_view.viewport().mapToGlobal(pos))
@@ -2571,6 +2612,9 @@ class MainWindow(QMainWindow):
                 dlg.image_saved.connect(lambda file_path: self.on_crop_board_image_saved(file_path, update_viewers=False))
                 dlg.image_changed.connect(lambda file_path: self.on_crop_board_image_changed(file_path, update_viewers=False))
                 accepted = dlg.exec()
+            except ImageLoadError as error:
+                QMessageBox.warning(parent_override or self, "Open Image", str(error))
+                return
             finally:
                 self.thumbnail_view.set_background_activity_paused(False)
             if accepted or dlg.saved_any:
@@ -2860,6 +2904,9 @@ class MainWindow(QMainWindow):
                 dlg.image_saved.connect(self.on_adjust_board_image_saved)
                 dlg.image_changed.connect(self.on_adjust_board_image_changed)
                 dlg.exec()
+            except ImageLoadError as error:
+                QMessageBox.warning(parent_override or self, "Open Image", str(error))
+                return
             finally:
                 self.thumbnail_view.set_background_activity_paused(False)
 
@@ -3209,6 +3256,7 @@ class MainWindow(QMainWindow):
                 lambda: self.open_folder_in_file_explorer(folder_path)
             )
             menu.addAction(open_action)
+            self.add_new_instance_folder_action(menu, folder_path)
 
             favorite_action = QAction("Add to Favorites", self)
             favorite_action.triggered.connect(
@@ -3314,7 +3362,13 @@ class MainWindow(QMainWindow):
         dialog.thumbnail_size_changed.connect(self.thumbnail_view.set_thumbnail_size)
         dialog.resource_settings_changed.connect(self.apply_resource_settings)
         dialog.theme_changed.connect(apply_theme)
+        dialog.image_settings_changed.connect(self.apply_image_settings)
         dialog.exec()
+
+    def apply_image_settings(self, settings):
+        self.clear_viewer_prefetch()
+        self.preview_viewer.apply_image_settings(settings)
+        self.fullscreen_viewer.viewer.apply_image_settings(settings)
 
     def apply_resource_settings(self, settings):
         self.clear_viewer_prefetch()

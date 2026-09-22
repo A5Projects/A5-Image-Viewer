@@ -87,7 +87,7 @@ fullscreen. Passing a folder opens the browser at that folder.
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The current suite contains 177 tests. Test modules set
+The current suite contains 206 tests. Test modules set
 `QT_QPA_PLATFORM=offscreen` where GUI construction is needed. Tests that write
 configuration should redirect `utils.file_ops.CONFIG_FILE` to a temporary
 directory and restore it during teardown. Never intentionally run a settings
@@ -114,10 +114,14 @@ PyInstaller is missing.
 
 Build outputs go to `output_exe`:
 
-- `build-exe.bat` creates the one-file portable `!A5ImageViewer.exe`. Rename a
-  copy to `A5ImageViewer-Portable-<version>.exe` for release distribution.
+- `build-exe.bat` creates the one-file portable `!A5ImageViewer.exe` and a
+  byte-identical `A5ImageViewer-Portable.exe` release copy.
 - `build-installer.bat` creates a PyInstaller onedir staging tree and compiles
-  `A5ImageViewer-Setup-<version>.exe` with Inno Setup 6 or 7.
+  `A5ImageViewer-Setup.exe` with Inno Setup 6 or 7.
+
+Both bundles include `LICENSE` and `CHANGELOG.md` for offline About content.
+Release filenames remain stable. The release tag and `utils/app_info.py` date
+identify dated updates; SHA256SUMS.txt is generated from the final binaries.
 
 The local `PyToExe` folder is an ignored historical/local tool and is not used
 by the supported build process.
@@ -126,7 +130,8 @@ For a release version change, keep these locations synchronized:
 
 - `APP_VERSION` in `build-installer.bat`
 - file and product versions in `installer/A5ImageViewer.version.txt`
-- release filenames and instructions in `README.md`
+- `APP_VERSION`, `RELEASE_DATE`, and `RELEASE_TAG` in `utils/app_info.py`
+- the current entry in `CHANGELOG.md`
 - the Git tag/release name
 
 The Inno script receives `MyAppVersion` from the build BAT. The install folder
@@ -135,6 +140,14 @@ deletes/replaces those runtime files but deliberately preserves the generated
 `config.json`.
 
 ## 4. Repository Map
+
+- `ui/about_dialog.py`: Settings About button target and contextual F1 help,
+  grouped shortcut reference, offline changelog, and full license. A WindowShortcut
+  is registered separately on the browser, viewer, Crop, Adjust, and Settings.
+  The Disable F1 checkbox immediately updates existing registrations and persists
+  the preference for future windows. About itself does not save pending editor
+  or Settings changes. Update shortcut descriptions when key bindings change.
+- `utils/app_info.py`: app version/date, GitHub links, and bundled document paths.
 
 ### Entry point and coordination
 
@@ -244,9 +257,17 @@ slash style or original casing as identity.
 decoding begins.
 
 - Folders are always sorted A-Z and placed before files.
+- Sort labels use Name/Date/Type with ↑/↓ for ascending/descending. The closed
+  combo sizes to its contents; the popup includes extra space for its checkmark
+  column so no label is elided. The filter is 50% wider than its previous
+  natural width (previously capped at 170 logical pixels).
 - Images/videos/PDFs use the selected name, date, or type ordering.
 - The text filter applies to files; enabled folders remain visible for
-  navigation.
+  navigation. Whitespace-separated terms are ANDed as case-insensitive literal
+  substrings of the filename (including its extension), in any order. Terms
+  are split once per filter pass. Empty/whitespace-only input clears the text
+  restriction. Existing row visibility, image navigation, and Show toggles
+  continue to use the same filter; there is no separate search-results model.
 - Changes in the Show popup are batched and applied after the menu closes.
 - A favorite folder can remember its sort key/direction. Non-favorites do not
   write per-folder sort state.
@@ -349,12 +370,16 @@ frameless fullscreen and a bordered, resizable window:
   fullscreen if none remain. Browser selection follows the replacement image.
   Queued moves choose the replacement at completion and compare normalized paths.
 - Plain wheel navigates images; Ctrl+wheel zooms.
-- Space also advances. Backspace, the Show in browser button, and its context
-  menu action synchronize browser selection/preview without closing or changing
+- Space also advances. Backspace and the Show in browser context-menu action
+  synchronize browser selection/preview without closing or changing
   `fullscreen_start_path`. Preserve unsaved pixels during this explicit sync.
-- HUD and sync button belong to the outer viewer dialog, positioned relative to
-  the viewport. Do not parent them to the scrolling viewport: Qt scrolls child
+- The HUD belongs to the outer viewer dialog, positioned relative to
+  the viewport. Do not parent it to the scrolling viewport: Qt scrolls child
   widgets along with its contents.
+- The top-right sync button is removed. The context menu has explicit compact
+  item padding to reduce the label/shortcut gap; next/previous list one primary
+  shortcut each and keep the alternatives in visible tooltips. Key handling is
+  unchanged.
 - Right-drag pans. A right click without dragging opens the context menu.
 - Left-drag creates a resizable pixel selection. Ctrl+A selects the whole
   image; Ctrl+C copies the selected pixels or whole image.
@@ -411,9 +436,34 @@ When Auto is off, the same unique name is prefilled in a Save As dialog. When
 Auto is on, it saves directly. The Ask checkbox controls overwrite confirmation
 for saving back to the source.
 
-Adjacent-image prefetch is bounded by the resource profile. Oversized images
-are skipped rather than allowed to exceed the prefetch budget. Cache entries
-are checked against `(size, mtime_ns)` fingerprints before reuse.
+Adjacent-image prefetch is bounded by the resource profile and a fixed 256 MiB
+per-image cap in `_read_prefetch_image`. Header dimensions are checked before
+decoding, and actual decoded cost is checked before caching. This shared worker
+serves both Crop and viewer preloading. Larger images load on demand at full
+resolution. Cache entries are checked against `(size, mtime_ns)` fingerprints
+before reuse.
+
+`utils/image_loading.py` implements the foreground decoding policy. The default
+limit is 1024 MiB, independently configurable from 64 to 65536 MiB. The Qt
+allocation limit and Pillow pixel guard are set on startup and when settings
+are accepted. Foreground Qt and Adjust loaders check header dimensions at four
+bytes per pixel before decoding; Qt also enforces its allocation limit for
+higher-depth formats. A smaller `QT_IMAGEIO_MAXALLOC` override is reported
+separately. No reduced-resolution foreground loading or GPU viewport is used.
+Total process memory can exceed the setting because of display buffers, edits,
+undo state, concurrent decodes, and cache entries.
+
+Failed preview/viewer loads clear stale pixels and show an inline error, with
+the required size and Settings hint for a size rejection. Other failures retain
+the decoder error. Crop and Adjust show an Open Image warning; failed editor
+navigation preserves the previous image. Readers release their Windows file
+handles on failure as well as success.
+
+`ImageViewer.paintEvent` selects smooth pixmap transformation only below 100%
+logical zoom when `smooth_downscaling` is enabled. This applies to browser
+preview and both viewer modes, including manual zoom and restored transforms.
+It uses the existing CPU QWidget viewport and the original pixmap; at 100% or
+above, or with smoothing disabled, fast unsmoothed rendering is retained.
 
 ### Adjust Board
 
@@ -559,6 +609,22 @@ the optional installer task opens the relevant Settings page.
 - The install/portable directory must therefore be writable for persistence.
 - Legacy slash styles are normalized on read; new recent/address/last-folder
   writes use native normalized absolute paths.
+- File handles are scoped to individual reads/writes, with no lifetime lock or
+  cached whole-config snapshot. Sequential changes by separate processes read
+  the latest file and retain unrelated settings. Simultaneous read/modify/write
+  operations are not serialized and may overwrite each other.
+
+`utils/application_launch.py` starts independent processes with
+`QProcess.startDetached`. The toolbar's app-icon-only New instance action,
+separated from adjacent controls, (Ctrl+Shift+N) opens
+the current folder; folder menus in quick access, favorites, the directory tree,
+and thumbnails pass their clicked folder. Frozen builds launch `sys.executable`
+with `PYINSTALLER_RESET_ENVIRONMENT=1` in the child's environment, so one-file
+builds extract their own resources and survive the original process closing.
+Source runs launch the same Python environment (`pythonw.exe` on Windows when
+available) with the absolute `main.py` path. Paths are separate arguments,
+standard streams are detached, and launch failures produce a warning. Taskbar
+integration is unchanged.
 
 Important keys and defaults:
 
@@ -577,6 +643,9 @@ Important keys and defaults:
 | `custom_thumbnail_workers` | `4`, clamped 1..8 |
 | `custom_thumbnail_cache_mb` | `2048`, clamped 256..5120 |
 | `custom_crop_prefetch_mb` | `512`, clamped 128..1024 |
+| `max_decoded_image_mb` | `1024`; integer 64..65536, invalid values use default |
+| `smooth_downscaling` | `true`; CPU smoothing below 100% in preview/viewer |
+| `disable_f1_shortcut` | `false`; About remains accessible from Settings |
 | `fullscreen_hud_visible` | `true` |
 | `viewer_default_mode` | `fullscreen`; also `windowed` or `last_used` |
 | `viewer_state` | validated last mode, normal geometry, maximized state, window monitor, and last viewer monitor |
@@ -690,6 +759,9 @@ These are the most important engineering constraints for future changes:
 | `test_folder_previews.py` | delayed non-recursive mosaics and stale cancellation |
 | `test_fullscreen_hud.py` | HUD, pixel selection, zoom, focus, slideshow, shortcuts |
 | `test_fullscreen_moves.py` | queued moves, normalized paths, next-image selection, cancellation, and empty-folder exit |
+| `test_image_loading.py` | decoding limits/settings, Qt/Pillow loading, error recovery, reader release, large-image prefetch exclusion, CPU smoothing across zoom levels |
+| `test_new_instance.py` | launch paths/errors, detached process lifetime, sequential shared config access, toolbar/folder commands, compact viewer menu and removed sync button |
+| `test_about_dialog.py` | offline content, contextual F1, disabling/re-enabling F1, Settings access, and unchanged pending preferences |
 | `test_viewer_modes.py` | mode/settings persistence, geometry fallback, F11, resizing/zoom, and close cancellation |
 | `test_viewer_workflows.py` | folder deletion, browser synchronization, Space, fixed HUD, crop zoom/pan and cached navigation |
 | `test_text_files.py` | TXT filtering, external opening, mixed transfers/clipboard, conflicts, and incremental updates |

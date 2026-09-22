@@ -39,17 +39,17 @@ features work there should not be an enormous job.
 Download the current files from the
 [latest GitHub release](https://github.com/A5Projects/A5-Image-Viewer/releases/latest):
 
-1. Use `A5ImageViewer-Portable-1.0.0.exe` as a completely portable version with
+1. Use `A5ImageViewer-Portable.exe` as a completely portable version with
    no installation or system changes. It creates `config.json` beside the EXE
    for settings and folder history, but creates nothing else.
-2. Use `A5ImageViewer-Setup-1.0.0.exe` for a classic installer with optional
+2. Use `A5ImageViewer-Setup.exe` for a classic installer with optional
    Windows application and file-association integration.
 3. To run from source, use `run.bat`. It creates the Python environment and
    installs dependencies on its first run, then starts the application. This
    requires Python 3 on `PATH`.
 
-The executable builds are current as of the tagged release. They can also be
-built locally using the instructions below.
+Download filenames stay the same between releases. The release tag and About
+window identify the update. Neither executable requires Python.
 
 ## Screenshots
 
@@ -86,13 +86,13 @@ AI assistance.
 
 ### Portable build
 
-Download `A5ImageViewer-Portable-1.0.0.exe` from the latest release and place it
+Place `A5ImageViewer-Portable.exe`
 in any writable folder. No Python installation is required. The application
 stores its `config.json` in that folder.
 
 ### Installer
 
-Download and run `A5ImageViewer-Setup-1.0.0.exe`. The destination folder is
+Run `A5ImageViewer-Setup.exe`. The destination folder is
 selectable. Windows integration and supported image-file associations are
 optional installer choices. No Python installation is required.
 
@@ -121,7 +121,31 @@ python -m venv .venv
 Application preferences and recent paths are stored in the local `config.json`.
 That file is intentionally not tracked.
 
+Open **Settings → About…** or press **F1** for GitHub links, shortcuts grouped
+by window, the GPLv3 license, and the offline changelog. F1 opens the relevant
+shortcut section in the browser, viewer, Crop, Adjust, or Settings. About's
+**Disable F1 shortcut** checkbox applies immediately and is remembered; the
+Settings button stays available. Release history is also in [CHANGELOG.md](CHANGELOG.md).
+
+Use the app-icon **New instance** button on the toolbar or **Ctrl+Shift+N** to open the current
+folder in another independent application instance. Folder context menus in
+the thumbnails, directory tree, favorites, and quick access also offer
+**Open in new instance**. This works in installed and portable builds; closing
+the original instance leaves the new one running. Instances share saved
+preferences, but browse independently. The config file is closed between
+reads/writes; sequential settings changes are preserved, with no coordination
+for simultaneous writes.
+
 ## Windowed viewing and caption files
+
+The **Filter** field matches all space-separated words in a filename, including
+its extension, in any order and without case sensitivity. For example,
+`krea2 345 png` matches `krea2_scene_345.png`. It filters the existing browser
+view; enabled folders remain visible for navigation. Clear the field to show
+all files allowed by the Show options.
+The compact sort dropdown offers **Name ↑/↓**, **Date ↑/↓**, and **Type ↑/↓**;
+Date ↑ is oldest first and Date ↓ is newest first. The filter field is wider
+to accommodate multiple terms.
 
 In Settings, **Default image view** offers Fullscreen, Windowed, or Remember last
 used. Press **F11** in the image viewer (or use its context menu) to switch modes.
@@ -130,14 +154,29 @@ resize or move it to another monitor. Its size, position, monitor, and maximized
 state are remembered. Fullscreen remains the default for existing settings.
 
 In either viewer mode, **Space** advances to the next image. **Backspace** or
-**Show in browser** selects and scrolls to the displayed image in the thumbnail
-browser without closing the viewer. Escape still returns to the image where
+the context-menu **Show in browser** action selects and scrolls to the displayed
+image in the thumbnail browser without closing the viewer. Escape still returns to the image where
 viewing started; Enter closes on the displayed image. The filename/resolution
 overlay stays fixed in the top-left corner while zooming and panning.
+The viewer context menu uses compact spacing; additional next/previous-image
+shortcuts are listed in tooltips. There is no top-right Show in browser button.
 
 Crop Board provides **+ / -**, **Ctrl+mouse wheel**, **\*** (Fit), and **/**
 (actual size) zoom controls. Right-drag pans; left-drag selects a crop. Moving to
 another image resets zoom to Fit and retains the existing prefetch path.
+
+Settings provides **Maximum decoded image size** under Resource Usage, defaulting
+to **1,024 MiB** (adjustable from 64 to 65,536 MiB). This is a per-image decoding
+limit, not a limit on total application memory. Preview, fullscreen/windowed
+viewing, Crop, and Adjust explain when an image exceeds it and suggest raising
+the setting. Images remain at full resolution. Images above **256 MiB decoded**
+are skipped by viewer/Crop preloading and loaded only when opened; ordinary
+images retain preloading.
+
+**Smooth downscaling** in Settings is enabled by default for the preview and
+fullscreen/windowed image viewer. It uses CPU rendering below 100% zoom;
+100% and larger remain unsmoothed. It can be disabled, and does not enable GPU
+acceleration or change the source pixels.
 
 Selected folders in the thumbnail view can be deleted with **Del** (Recycle Bin)
 or **Shift+Del** (permanent), after confirmation. Folder contents are included.
@@ -157,8 +196,10 @@ Inno Setup 6 or 7.
 
 Build results are written to the local `output_exe` directory. That directory is
 ignored by Git; distributable builds belong on the GitHub Releases page.
-The portable build creates `!A5ImageViewer.exe`. For release distribution,
-rename a copy to `A5ImageViewer-Portable-1.0.0.exe`.
+The portable build creates `!A5ImageViewer.exe` and an identical
+`A5ImageViewer-Portable.exe` release copy. The installer build creates
+`A5ImageViewer-Setup.exe`. Download filenames stay the same between releases;
+the release tag and in-app About window identify the update.
 
 The build scripts invoke PyInstaller directly. The local `PyToExe` directory and
 third-party conversion frontend are not used or included.

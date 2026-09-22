@@ -1,21 +1,26 @@
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout, QSpinBox)
+                             QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout, QSpinBox, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_ops import (RESOURCE_PROFILES, get_thumbnail_size, set_thumbnail_size,
                             get_startup_behavior, set_startup_behavior,
                             get_resource_settings, set_resource_settings,
                             get_ui_theme, set_ui_theme,
-                            get_viewer_default_mode, set_viewer_default_mode)
+                            get_viewer_default_mode, set_viewer_default_mode,
+                            get_image_settings, set_image_settings)
+from utils.image_loading import apply_image_loading_settings
 from ui.theme import THEME_NAMES
+from ui.about_dialog import install_about_shortcut, show_about
 
 class SettingsDialog(QDialog):
     thumbnail_size_changed = pyqtSignal(int)
     resource_settings_changed = pyqtSignal(object)
     theme_changed = pyqtSignal(str)
+    image_settings_changed = pyqtSignal(object)
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_about_shortcut(self, "Settings and dialogs")
         self.setWindowTitle("Settings")
         self.resize(430, 430)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
@@ -47,6 +52,14 @@ class SettingsDialog(QDialog):
         self.viewer_mode_combo.addItem("Remember last used", "last_used")
         self.viewer_mode_combo.setCurrentIndex(self.viewer_mode_combo.findData(get_viewer_default_mode()))
         form_layout.addRow("Default image view:", self.viewer_mode_combo)
+        image_settings = get_image_settings()
+        self.smooth_check = QCheckBox("Smooth downscaling")
+        self.smooth_check.setChecked(image_settings["smooth_downscaling"])
+        self.smooth_check.setToolTip(
+            "Smooth images below 100% zoom in the preview and image viewer. "
+            "Uses the CPU; 100% and larger remain unsmoothed."
+        )
+        form_layout.addRow(self.smooth_check)
         layout.addWidget(general_group)
         
         # Thumbnail Settings
@@ -109,6 +122,19 @@ class SettingsDialog(QDialog):
         resource_layout.addRow("Thumbnail workers:", self.worker_spin)
         resource_layout.addRow("Thumbnail cache:", self.cache_spin)
         resource_layout.addRow("Crop prefetch:", self.prefetch_spin)
+        self.image_limit_spin = QSpinBox()
+        self.image_limit_spin.setRange(64, 65536)
+        self.image_limit_spin.setSingleStep(256)
+        self.image_limit_spin.setSuffix(" MiB")
+        self.image_limit_spin.setValue(image_settings["max_decoded_image_mb"])
+        self.image_limit_spin.setToolTip(
+            "Limit for a single decoded image, independent of the cache profile. "
+            "Total application memory can be higher due to editing and display copies."
+        )
+        resource_layout.addRow("Maximum decoded image size:", self.image_limit_spin)
+        prefetch_note = QLabel("Images above 256 MiB are loaded on demand and are not preloaded.")
+        prefetch_note.setWordWrap(True)
+        resource_layout.addRow(prefetch_note)
         layout.addWidget(resource_group)
 
         self.resource_combo.currentIndexChanged.connect(self.on_resource_profile_changed)
@@ -121,6 +147,9 @@ class SettingsDialog(QDialog):
         
         # Buttons
         btn_layout = QHBoxLayout()
+        self.about_button = QPushButton("About…")
+        self.about_button.clicked.connect(lambda: show_about(self, "Settings and dialogs"))
+        btn_layout.addWidget(self.about_button)
         btn_layout.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -162,6 +191,7 @@ class SettingsDialog(QDialog):
         }
         
     def accept(self):
+        old_image_settings = get_image_settings()
         old_resources = get_resource_settings()
         old_theme = get_ui_theme()
         new_theme = self.theme_combo.currentData()
@@ -171,6 +201,11 @@ class SettingsDialog(QDialog):
         set_startup_behavior(self.startup_combo.currentData())
         set_ui_theme(new_theme)
         set_viewer_default_mode(self.viewer_mode_combo.currentData())
+        set_image_settings(self.image_limit_spin.value(), self.smooth_check.isChecked())
+        apply_image_loading_settings()
+        new_image_settings = get_image_settings()
+        if new_image_settings != old_image_settings:
+            self.image_settings_changed.emit(new_image_settings)
         if self.resource_combo.currentData() == "custom":
             custom_workers = self.worker_spin.value()
             custom_cache = self.cache_spin.value()

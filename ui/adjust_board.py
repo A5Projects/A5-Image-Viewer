@@ -1,5 +1,7 @@
 import math
 import os
+from ui.about_dialog import install_about_shortcut
+from utils.image_loading import read_pil_image
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, 
                              QGraphicsPixmapItem, QSlider, QLabel, QPushButton, QCheckBox, 
                              QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox, QGridLayout,
@@ -55,6 +57,7 @@ class AdjustBoard(QDialog):
     def __init__(self, image_path, parent=None, navigation_paths=None):
         super().__init__(parent)
         self.image_path = image_path
+        install_about_shortcut(self, "Adjust Colors & Size")
         self.navigation_paths = list(navigation_paths or [])
         self.navigation_positions = {
             path: index for index, path in enumerate(self.navigation_paths)
@@ -87,10 +90,7 @@ class AdjustBoard(QDialog):
 
     @staticmethod
     def read_image(image_path):
-        with Image.open(image_path) as img:
-            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
-                return img.convert("RGBA")
-            return img.convert("RGB")
+        return read_pil_image(image_path)
 
     def build_preview_source(self):
         self.preview_original_pil = self.original_pil.copy()

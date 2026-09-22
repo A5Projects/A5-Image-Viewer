@@ -72,6 +72,47 @@ class ThumbnailFilteringTests(unittest.TestCase):
         self.assertFalse(self.view.isRowHidden(2))
         self.assertTrue(self.view.isRowHidden(3))
 
+    def test_multiple_terms_require_every_word_in_any_order(self):
+        self.add_item("P:/images/krea2_scene_345.PNG", "image", "png")
+        self.add_item("P:/images/345_scene_krea2.png", "image", "png")
+        self.add_item("P:/images/krea2_scene_346.png", "image", "png")
+        self.add_item("P:/images/krea2_scene_345.jpg", "image", "jpg")
+        self.add_item("P:/krea2_345_png/other.png", "image", "png")
+        self.view.set_filter_text("  PNG   KREA2\t345  ")
+        visible = [row for row in range(self.view.thumbnail_model.rowCount())
+                   if not self.view.isRowHidden(row)]
+        self.assertEqual(visible, [0, 4, 5])
+        self.assertEqual(self.view.visible_image_paths(), [
+            "P:/images/krea2_scene_345.PNG", "P:/images/345_scene_krea2.png",
+        ])
+
+    def test_multiple_terms_match_normal_words_for_all_enabled_file_kinds(self):
+        for name, kind, extension in (
+            ("blue_sky.png", "image", "png"),
+            ("sky_blue.TXT", "text", "txt"),
+            ("blue_sky.pdf", "image", "pdf"),
+            ("sky_blue.mp4", "video", "mp4"),
+            ("blue_sea.txt", "text", "txt"),
+        ):
+            self.add_item("P:/images/" + name, kind, extension)
+        self.view.set_kind_visibility(show_images=True, show_videos=True,
+                                      show_pdfs=True, show_text=True, show_folders=False)
+        self.view.set_filter_text("blue sky")
+        visible = [row for row in range(self.view.thumbnail_model.rowCount())
+                   if not self.view.isRowHidden(row)]
+        self.assertEqual(visible, [4, 5, 6, 7])
+        self.view.set_kind_visibility(show_folders=False, show_text=False, show_videos=False)
+        self.assertEqual(self.view.visible_item_count, 2)
+
+    def test_whitespace_only_restores_files_and_punctuation_is_literal(self):
+        self.add_item("P:/images/photo[1]_final.png", "image", "png")
+        self.add_item("P:/images/photo1_final.png", "image", "png")
+        self.view.set_filter_text("[1] final")
+        self.assertFalse(self.view.isRowHidden(4))
+        self.assertTrue(self.view.isRowHidden(5))
+        self.view.set_filter_text(" \t  ")
+        self.assertEqual(self.view.visible_item_count, 6)
+
     def test_editable_image_snapshot_excludes_pdf(self):
         self.view.set_kind_visibility(
             show_images=True,

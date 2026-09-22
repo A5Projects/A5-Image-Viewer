@@ -77,6 +77,35 @@ def save_config(config: Dict[str, Any]):
         json.dump(config, f, indent=4)
 
 
+def get_image_settings():
+    config = load_config()
+    limit = config.get("max_decoded_image_mb", 1024)
+    if type(limit) is not int or not 64 <= limit <= 65536:
+        limit = 1024
+    smooth = config.get("smooth_downscaling", True)
+    return {
+        "max_decoded_image_mb": limit,
+        "smooth_downscaling": smooth if type(smooth) is bool else True,
+    }
+
+
+def get_disable_f1_shortcut():
+    return load_config().get("disable_f1_shortcut", False) is True
+
+
+def set_disable_f1_shortcut(disabled):
+    config = load_config()
+    config["disable_f1_shortcut"] = bool(disabled)
+    save_config(config)
+
+
+def set_image_settings(max_decoded_image_mb, smooth_downscaling):
+    config = load_config()
+    config["max_decoded_image_mb"] = max_decoded_image_mb
+    config["smooth_downscaling"] = smooth_downscaling
+    save_config(config)
+
+
 def get_viewer_default_mode():
     value = load_config().get("viewer_default_mode", "fullscreen")
     return value if value in ("fullscreen", "windowed", "last_used") else "fullscreen"
