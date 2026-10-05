@@ -22,7 +22,7 @@ nonetheless into a personal best-of, but only under that guiding rule.
 - Basic file-manager options: rename, create a folder, and open in Explorer.
 - Fast copying options: Copy To, Move To, remembered paths, visual conflict and
   renaming dialogs, automatic renaming, clipboard operations, and drag and drop.
-- Single-key shortcuts, shown in the context menus.
+- Single-key shortcuts, shown in the context menus and the About (F1); Hold ALT to bypass them and jump to the letter instead. 
 - A fast and efficient Crop Board for cropping many images quickly. Its internal
   behavior and UI are very much based on my priorities.
 - CPU-based image adjustments for size and appearance, with a simple functional
