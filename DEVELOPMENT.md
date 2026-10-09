@@ -101,6 +101,38 @@ Useful focused commands:
 .venv\Scripts\python.exe -m compileall -q main.py ui utils
 ```
 
+### GitHub Actions
+
+`.github/workflows/windows-tests.yml` runs the existing unittest suite on one
+Windows runner with Python 3.13. Pushes to `main` and pull requests targeting
+`main` trigger it, except when all changed files are `README.md` and/or
+`DEVELOPMENT.md`. Feature-branch pushes are tested through their pull request
+rather than a second push run. Changes to the bundled `CHANGELOG.md`, runtime
+resources, tests, dependencies, and build scripts still trigger tests.
+
+Routine runs install only `requirements.txt` (PyQt6 and Pillow), use offscreen
+Qt for the unit tests, and cache pip downloads. The existing source startup
+test explicitly exercises the Windows platform plugin in a child process.
+New runs cancel superseded runs for the same event and ref.
+
+For a pre-release packaged check, open **Actions > Windows tests > Run
+workflow**, select the source branch, and enable **Build the portable EXE and
+run its existing startup check**. Tests must pass first. This option calls
+`build-exe.bat` with `A5_BUILD_NO_PAUSE=1`, reusing its build environment helper,
+sanitized DLL search, and `scripts/check_executable.py`. PyInstaller is installed
+only for this option. The frozen startup check uses the Windows Qt platform
+plugin; it does not inherit the unit-test step's offscreen setting.
+
+This optional check validates a freshly built portable executable, not the
+already uploaded release binaries or the installer. It does not upload artifacts,
+create tags, publish releases, or change the existing local/Codex build process.
+`build-installer.bat` continues to check its onedir executable locally. Release
+and tag events do not start additional CI runs.
+
+Because documentation-only changes skip the entire workflow, do not make this
+workflow a required branch-protection check: GitHub can leave a skipped required
+check pending and block a documentation-only pull request.
+
 ### Build executables
 
 ```powershell

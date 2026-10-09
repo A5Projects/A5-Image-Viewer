@@ -1,0 +1,66 @@
+name: Windows tests
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - README.md
+      - DEVELOPMENT.md
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - README.md
+      - DEVELOPMENT.md
+  workflow_dispatch:
+    inputs:
+      check_executable:
+        description: Build the portable EXE and run its existing startup check
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-tests:
+    name: Windows unit tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Prepare test environment
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .\.venv\Scripts\python.exe -m unittest discover -s tests -q
+
+      # The BAT reuses .venv, installs PyInstaller only when needed, and calls
+      # scripts/check_executable.py. Do not repeat its build or startup logic.
+      - name: Build portable EXE and check Windows startup
+        if: github.event_name == 'workflow_dispatch' && inputs.check_executable
+        shell: cmd
+        env:
+          A5_BUILD_NO_PAUSE: '1'
+        run: call build-exe.bat
