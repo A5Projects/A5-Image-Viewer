@@ -61,6 +61,25 @@ class RenameTemplateTests(unittest.TestCase):
 
 
 class BatchRenameWorkerTests(unittest.TestCase):
+    def test_sharing_retry_stops_at_deadline(self):
+        error = OSError("file is still in use")
+        error.winerror = 33
+        with patch("ui.batch_operations.os.rename", side_effect=error) as rename:
+            with self.assertRaises(OSError) as raised:
+                rename_with_sharing_retry("old", "new", timeout_seconds=0)
+        self.assertIs(raised.exception, error)
+        rename.assert_called_once()
+
+    def test_sharing_retry_cancels_before_another_attempt(self):
+        error = OSError("file is in use")
+        error.winerror = 32
+        with patch("ui.batch_operations.os.rename", side_effect=error) as rename:
+            with self.assertRaises(InterruptedError):
+                rename_with_sharing_retry(
+                    "old", "new", cancelled=lambda: rename.call_count > 0,
+                )
+        rename.assert_called_once()
+
     def test_sharing_violation_is_retried(self):
         attempts = []
 

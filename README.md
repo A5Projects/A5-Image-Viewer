@@ -151,6 +151,21 @@ The compact sort dropdown offers **Name ↑/↓**, **Date ↑/↓**, and **Type 
 Date ↑ is oldest first and Date ↓ is newest first. The filter field is wider
 to accommodate multiple terms.
 
+With the thumbnail browser focused, **Alt+letter** or **Alt+0–9** selects the
+next visible file or folder whose name starts with that character. Repeating
+the shortcut cycles through matches in the current order and wraps around.
+It respects the current filter. Plain-letter actions such as H for horizontal
+flip remain unchanged; **Shift+letter** also works as an alternative.
+
+The **Back**, **Forward**, and **Up** arrow buttons beside the address field
+navigate folder history or open the parent folder. Their tooltips show the
+existing keyboard shortcuts. These buttons are compact, and the address field
+can shrink in narrow windows even when the folder history contains long paths.
+
+Renaming briefly retries if an image reader still has the file open. The Rename
+window stays responsive, and Cancel stops further attempts. Name collisions keep
+the attempted name editable in the same dialog.
+
 In Settings, **Default image view** offers Fullscreen, Windowed, or Remember last
 used. Press **F11** in the image viewer (or use its context menu) to switch modes.
 Windowed viewing has the standard Windows border and controls; restore it to
@@ -168,6 +183,13 @@ shortcuts are listed in tooltips. There is no top-right Show in browser button.
 Crop Board provides **+ / -**, **Ctrl+mouse wheel**, **\*** (Fit), and **/**
 (actual size) zoom controls. Right-drag pans; left-drag selects a crop. Moving to
 another image resets zoom to Fit and retains the existing prefetch path.
+**Crop to File** (F) with **Auto** off opens a folder picker at the last manual
+destination, remembered across restarts (initially the current image's folder).
+With Auto on, it saves immediately beside the current image, regardless of the
+last manual destination. Both modes preserve the image format and use the next
+available `name_crop.ext`, `name_crop2.ext`, and so on in the chosen folder.
+Crop Board and the image viewer use one selection outline with visible resize
+handles; the extra outer selection frame has been removed.
 
 Settings provides **Maximum decoded image size** under Resource Usage, defaulting
 to **1,024 MiB** (adjustable from 64 to 65,536 MiB). This is a per-image decoding

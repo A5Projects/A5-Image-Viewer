@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — 2026-10-09
+
+- Single-file rename now suspends new thumbnail reads and retries temporary
+  Windows sharing violations in a worker thread. The dialog stays responsive,
+  supports cancellation while waiting, and preserves editable collision errors.
+- Stabilized the Crop Board button-feedback test by waiting for the expected
+  state with a timeout instead of assuming a timer fires within 170 ms.
+
+- The address field now shrinks independently of long folder-history entries.
+  Smaller, closely spaced Back/Forward/Up buttons leave more toolbar controls
+  visible in narrow windows.
+- Reverted the experimental folder-tree icon provider and layout optimizations
+  after reports of intermittent freezes when changing folders. The original Qt
+  tree behavior is restored; the cause of the reported freezes is unconfirmed.
+
+- Crop to File with Auto off now chooses a folder and remembers the last
+  successful manual destination across restarts. Auto saves beside the current
+  image. Both number existing `_crop` filenames in the chosen destination;
+  tooltips explain the difference.
+- Crop Board and fullscreen/windowed pixel selections now show one outline
+  at the actual selection boundary, with resize handles always visible.
+- Added compact Back, Forward, and Up buttons beside the browser address field,
+  using the existing folder navigation and keyboard shortcuts.
+
+- Added Alt+letter and Alt+0–9 filename navigation in the thumbnail browser.
+  Repeated presses cycle through visible matches in display order and wrap.
+  Existing single-letter actions are preserved.
+- Fixed the Shift+letter alternative to match actual filenames instead of
+  resolution/type labels, and documented both options in About and the README.
+
 ## 2026-09-22 — v1.0.0-20260922.1
 
 - Fixed the packaged application failing at startup with a QtWidgets DLL error.

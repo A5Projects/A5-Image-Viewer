@@ -5,7 +5,9 @@ A5ImageViewer. It describes the architecture, important implementation choices,
 build and test workflow, and the behavioral contracts that are easy to break
 when changing the application.
 
-It reflects the September 22, 2026 startup fix (`v1.0.0-20260922.1`).
+It includes the October 9, 2026 rename-reader coordination and timer-test fix,
+September 27 folder-tree rollback, September 25 crop-saving,
+selection-outline, and folder navigation buttons, and September 23 Alt navigation.
 Read [README.md](README.md) first for the product goals and user
 facing overview.
 
@@ -87,7 +89,7 @@ fullscreen. Passing a folder opens the browser at that folder.
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The current suite contains 209 tests. Test modules set
+The current suite contains 230 tests. Test modules set
 `QT_QPA_PLATFORM=offscreen` where GUI construction is needed. Tests that write
 configuration should redirect `utils.file_ops.CONFIG_FILE` to a temporary
 directory and restore it during teardown. Never intentionally run a settings
@@ -243,6 +245,10 @@ Important state fields include:
 - `show_images`, `show_pdfs`, `show_videos`, and `show_folders`: scan/filter
   categories.
 - `navigation_history` and `navigation_index`: browser back/forward history.
+  Address-row Back/Forward buttons use this same history. Their enabled states
+  refresh when folders are remembered or history is traversed. Up opens the
+  parent, including when the address editor has focus; Backspace still edits
+  address text normally. Up is disabled at a drive root or with no folder open.
 - `fullscreen_start_path`: path used to reconcile fullscreen exit and moves.
 
 The thumbnail model uses a `QStandardItemModel`. Custom roles in
@@ -292,11 +298,34 @@ decoding begins.
 - The main window title is the current directory name, or the drive name for a
   root, which helps distinguish multiple instances in the taskbar.
 - Back/forward history supports Alt+Left, Alt+Right, and mouse thumb buttons.
+- The address combo uses a 24-character minimum-content hint, independent of
+  folder-history path lengths, and expands into available toolbar space.
+  Back/Forward/Up use 16-pixel icons in 22-by-24 logical-pixel buttons with
+  1-pixel gaps; the other toolbar icons retain their usual size.
+- Alt+letter/top-row digit cycles to the next matching filename in the thumbnail
+  model's current order, wrapping and skipping hidden rows. Shift+letter remains
+  an alternative. Match `PATH_ROLE` basenames, never the display label (which
+  includes resolution/type). `ShortcutOverride` and key presses are handled
+  only on the thumbnail view/viewport, preserving plain-letter actions and text
+  entry. Ctrl/AltGr, Meta, keypad Alt codes, and other Alt shortcuts are excluded.
 
 The left navigation area combines fixed system locations, scrolling favorites,
 a compact drive strip, and `QFileSystemModel` tree. The drive strip reports no
 horizontal minimum and hides rightmost drive buttons when narrow. The tree uses
-content-sized, per-pixel horizontal scrolling for deep paths.
+content-sized, per-pixel horizontal scrolling for deep paths, Qt's built-in icon
+provider, and default row-height/column-sampling behavior.
+
+The September 23 experiment with a Python cached icon/type provider, uniform row
+heights, and visible-row column sizing was fully rolled back on September 27
+after reports of intermittent freezes when navigating folders. A local native
+Windows comparison (120 changes per provider, 24 folders of 96 JPEGs) did not
+reproduce the reported hang, so the optimization remains a suspect rather than
+a confirmed cause. The rollback restores the pre-experiment tree implementation;
+it does not claim to resolve every source of filesystem latency. Do not reintroduce
+the custom provider without investigating the reported regression. The crop
+changes, address navigation buttons, and Alt filename navigation are independent
+and remain in place.
+Arrow expansion must not select the folder or trigger `load_current_folder`.
 
 ## 7. Thumbnail and Preview Pipeline
 
@@ -332,6 +361,12 @@ Reader lifetime is important on Windows. A live decoder can prevent rename,
 move, or delete. Before destructive operations, use `pause_file_access`, clear
 viewer prefetch, pause thumbnail background activity, and shut down the video
 decoder when relevant. Resume through `resume_file_access` afterward.
+These helpers do not drain in-flight readers, and background pause still allows
+priority thumbnail requests. Single-file rename additionally uses
+`ThumbnailView.set_file_access_paused`: it stops the existing work queues without
+joining threads on the GUI, and prevents worker restarts until resumed. Current
+reads finish naturally. Missing thumbnails resume from the existing cache;
+normal folder navigation and editor background-pause behavior are unchanged.
 
 ## 8. Supported Content and Editing Boundary
 
@@ -433,6 +468,11 @@ animated/multi-frame inputs.
 
 `CropBoard` loads a full `QPixmap` and supports crop, rotate, flip, reset, and a
 five-state undo history. Selection rectangles become resizable immediately.
+The shared `ResizableRectItem` paints one cosmetic outline on `rect()` and
+always paints its eight handles. Do not call the base rect item's `paint()`:
+Qt adds a second selection frame around `boundingRect()` (which includes the
+handles), making the actual crop boundary ambiguous. Handles stay eight screen
+pixels across zoom levels and remain interactive when the item is deselected.
 Ctrl+A creates a resizable selection covering the entire current image.
 Side buttons and +/=, -, *, / shortcuts provide zoom, Fit, and actual size.
 Ctrl+wheel zooms and right-drag pans; left-drag retains crop selection. CropView
@@ -442,7 +482,7 @@ prefetch cache; zoom never changes decoded pixels or selection coordinates.
 Navigation uses a snapshot of visible editable image paths and does not wrap.
 
 Unsaved navigation offers Save, Discard, and Cancel with session-only remember
-behavior. Crop-to-file defaults to sibling names:
+behavior. Crop-to-file generates names in the destination folder:
 
 ```text
 name_crop.ext
@@ -450,8 +490,13 @@ name_crop2.ext
 name_crop3.ext
 ```
 
-When Auto is off, the same unique name is prefilled in a Save As dialog. When
-Auto is on, it saves directly. The Ask checkbox controls overwrite confirmation
+When Auto is off, a native folder picker starts at `crop_output_folder`, or the
+current image's folder if unset, invalid, or unavailable. Generate the unique
+name after the user chooses the destination, then remember that folder only
+after a successful save. Auto always saves directly in `image_path`'s folder
+and must not read or change the remembered manual destination. Both modes keep
+the source extension. Cancellation or a failed save keeps the image/selection
+and stored folder unchanged. The Ask checkbox controls overwrite confirmation
 for saving back to the source.
 
 Adjacent-image prefetch is bounded by the resource profile and a fixed 256 MiB
@@ -549,10 +594,19 @@ conversion worker is running, and completion waits for the worker to exit.
 
 ## 11. File Operations and Conflict Handling
 
-Single-file rename executes through a callback before the Rename dialog accepts.
+Single-file rename executes its filesystem callback in a dialog-owned QThread
+before the Rename dialog accepts. Callbacks must not access GUI objects. The
+dialog's start/finish signals coordinate readers on the GUI thread. A successful
+rename updates browser/viewer paths before readers resume; failure/cancellation
+restores the prior pause state. `rename_with_sharing_retry` handles only Windows
+errors 32/33, with a ten-second retry deadline and cancellation between attempts.
+Do not call its sleep/backoff loop from the GUI thread.
 A destination collision or filesystem error leaves the dialog open with an
 inline message and the attempted name selected for correction. Only successful
-renames update the thumbnail model; Cancel preserves the original path.
+renames update the thumbnail model. Cancel, Escape, and the close button request
+interruption and keep the worker owned until its finished signal arrives. If a
+rename already succeeded before cancellation, success wins so the displayed paths
+still match disk. Otherwise cancellation preserves the original path.
 
 There are two related transfer paths:
 
@@ -583,7 +637,7 @@ be reconciled.
 
 Delete uses a custom confirmation followed by `SHFileOperationW`. Normal delete
 sets `FOF_ALLOWUNDO` for the Recycle Bin; Shift+Delete is permanent. Copy, move,
-delete, and batch rename retry sharing violations with short bounded backoff to
+delete, and rename retry sharing violations with short bounded backoff to
 allow Qt/Pillow readers to release handles.
 
 Thumbnail deletion includes selected folders through
@@ -672,6 +726,7 @@ Important keys and defaults:
 | `convert_appendix` | `_result` |
 | `crop_ask_overwrite` | `true` |
 | `crop_auto_name_copies` | `false` |
+| `crop_output_folder` | Last successful manual crop destination; unset initially |
 | `remember_adjustments` | `false` |
 | `adjustment_values` | persisted only when adjustment memory is enabled |
 | `adjust_auto_name_copies` | `false` |
@@ -771,8 +826,10 @@ These are the most important engineering constraints for future changes:
 | `test_config_paths.py` | path normalization and frozen/source config location |
 | `test_convert_dialog.py` | conversion collisions, source deletion, and dialog worker lifetime |
 | `test_crop_transforms.py` | crop selection, transforms, prompts, shortcuts, naming |
+| `test_selection_outline.py` | one actual selection edge and always-visible handles at Fit/manual scales |
 | `test_delete_files.py` | Shell operation batching, cancellation, sharing retries |
 | `test_dialogs.py` | split rename fields and Windows filename validation |
+| `test_rename_readers.py` | real Windows decoder locks, responsive rename retries, cancellation, reader resumption, viewer paths, and late-cancel success |
 | `test_favorites.py` | aliases and favorite-specific sort persistence |
 | `test_folder_previews.py` | delayed non-recursive mosaics and stale cancellation |
 | `test_fullscreen_hud.py` | HUD, pixel selection, zoom, focus, slideshow, shortcuts |
@@ -787,6 +844,7 @@ These are the most important engineering constraints for future changes:
 | `test_reader_lifetimes.py` | Windows file-handle release behavior |
 | `test_save_prompt.py` | main edit save/discard session behavior |
 | `test_startup_activation.py` | command-line file/folder activation and titles |
+| `test_browser_navigation.py` | folder switching with active thumbnail/preview decoders, arrow versus folder selection, Alt filename/digit cycling, filters, wrapping, shortcut/text-entry isolation, and address navigation buttons |
 | `test_thumbnail_filtering.py` | type filters, PDF boundary, video labels |
 | `test_transfer_conflicts.py` | async preflight and conflict choices/naming |
 | `test_windows_shell.py` | Shell verbs, Send To, print, wallpaper, platform guards |
