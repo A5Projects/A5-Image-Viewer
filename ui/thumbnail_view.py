@@ -2,7 +2,7 @@ import os
 from collections import deque, OrderedDict
 from threading import Condition
 from PyQt6.QtWidgets import QListView, QStyledItemDelegate, QStyle
-from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal, QMimeData, QUrl
+from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal, QMimeData, QUrl, QItemSelectionModel
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QImageReader, QImage, QPainter, QColor, QDrag, QPen, QFont, QBrush
 from ui.theme import theme_colors
 
@@ -453,6 +453,7 @@ class ThumbnailView(QListView):
         self.pinned_paths = set()
         self.cache_background_paused = False
         self.interactive_background_paused = False
+        self.file_access_paused = False
         self._last_background_paused = None
         self.filter_text = ""
         self.show_images = True
@@ -489,6 +490,17 @@ class ThumbnailView(QListView):
     def set_background_activity_paused(self, paused):
         self.interactive_background_paused = bool(paused)
         self._update_background_pause()
+
+    def set_file_access_paused(self, paused):
+        """Stop new reads without waiting on an in-progress decoder in the GUI."""
+        paused = bool(paused)
+        if paused == self.file_access_paused:
+            return
+        self.file_access_paused = paused
+        if paused:
+            self._stop_thumbnail_workers()
+        else:
+            self._start_thumbnail_workers()
 
     def shutdown(self):
         if self.task_queue is not None:
@@ -751,6 +763,8 @@ class ThumbnailView(QListView):
 
     def _start_thumbnail_workers(self):
         self._stop_thumbnail_workers()
+        if self.file_access_paused:
+            return
         self.image_generation += 1
         image_rows = [
             row for row, record in enumerate(self.files)
@@ -1025,6 +1039,27 @@ class ThumbnailView(QListView):
             event.ignore()
             return
         super().keyPressEvent(event)
+
+    def jump_to_filename(self, prefix):
+        """Cycle through visible names in display order without searching labels."""
+        prefix = prefix.casefold()
+        if not prefix:
+            return False
+        count = self.thumbnail_model.rowCount()
+        start = self.currentIndex().row()
+        for offset in range(1, count + 1):
+            row = (start + offset) % count
+            if self.isRowHidden(row):
+                continue
+            index = self.thumbnail_model.index(row, 0)
+            path = index.data(PATH_ROLE)
+            if path and os.path.basename(path).casefold().startswith(prefix):
+                self.selectionModel().setCurrentIndex(
+                    index, QItemSelectionModel.SelectionFlag.ClearAndSelect
+                )
+                self.scrollTo(index)
+                return True
+        return False
 
     def scrollContentsBy(self, dx, dy):
         super().scrollContentsBy(dx, dy)

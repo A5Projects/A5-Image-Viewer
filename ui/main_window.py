@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QToolButton, QSizePolicy, QLabel, QStatusBar, QListWidgetItem, QCheckBox, QFileIconProvider,
                              QWidgetAction, QStyle, QFrame, QHeaderView)
 from PyQt6.QtGui import QFileSystemModel
-from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo
+from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo
 from ui.thumbnail_view import (ThumbnailView, PATH_ROLE, KIND_ROLE, EXT_ROLE, SIZE_ROLE,
                                MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, thumbnail_item_label)
 from ui.image_viewer import ImageViewer
@@ -18,7 +18,7 @@ from ui.crop_board import CropBoard, CropPrefetchService
 from ui.fullscreen_viewer import FullScreenViewer
 from ui.settings_dialog import SettingsDialog
 from ui.convert_dialog import ConvertDialog
-from ui.batch_operations import BatchRenameDialog, BatchRotateDialog
+from ui.batch_operations import BatchRenameDialog, BatchRotateDialog, rename_with_sharing_retry
 from ui.transfer_conflicts import TransferCoordinator
 from PyQt6.QtGui import QShortcut, QKeySequence, QAction, QIcon, QPixmap, QPainter, QColor, QPen, QFont, QPolygonF, QDesktopServices, QImageReader, QImage, QStandardItem
 from utils.file_ops import (copy_files as copy_files_batch, move_files as move_files_batch,
@@ -360,8 +360,39 @@ class MainWindow(QMainWindow):
         address_layout.setContentsMargins(0, 0, 0, 0)
         address_layout.setSpacing(6)
 
+        navigation_group = QWidget()
+        navigation_layout = QHBoxLayout(navigation_group)
+        navigation_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_layout.setSpacing(1)
+        self.folder_navigation_buttons = {}
+        for name, tooltip, callback in (
+            ("back", "Back (Alt+Left)", self.go_back_folder),
+            ("forward", "Forward (Alt+Right)", self.go_forward_folder),
+            ("up", "Up one folder (Backspace in thumbnails or folder tree)",
+             lambda: self.go_to_parent_folder(ignore_address_focus=True)),
+        ):
+            button = QToolButton()
+            button.setIcon(self.create_toolbar_icon(name))
+            button.setIconSize(QSize(16, 16))
+            button.setFixedSize(22, 24)
+            button.setAutoRaise(True)
+            button.setToolTip(tooltip)
+            button.setAccessibleName(name.capitalize())
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setEnabled(False)
+            button.clicked.connect(callback)
+            self.folder_navigation_buttons[name] = button
+            navigation_layout.addWidget(button)
+        address_layout.addWidget(navigation_group)
+
         self.address_bar = QComboBox()
         self.address_bar.setEditable(True)
+        # Long history entries must not set the toolbar's minimum width.
+        self.address_bar.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.address_bar.setMinimumContentsLength(24)
+        self.address_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.address_bar.setInsertPolicy(QComboBox.InsertPolicy.InsertAtTop)
         self.address_bar.lineEdit().returnPressed.connect(self.on_address_entered)
         self.address_bar.activated.connect(self.on_address_selected)
@@ -479,6 +510,8 @@ class MainWindow(QMainWindow):
         self.tree_view = QTreeView()
         self.tree_view.setAcceptDrops(True)
         self.file_model = QFileSystemModel()
+        # Keep Qt's native provider and layout behavior. The experimental
+        # Python icon/type provider was rolled back after navigation freezes.
         self.file_model.setRootPath("")
         self.file_model.setFilter(QDir.Filter.NoDotAndDotDot | QDir.Filter.AllDirs)
         self.tree_view.setModel(self.file_model)
@@ -761,7 +794,22 @@ class MainWindow(QMainWindow):
         painter.setBrush(QColor(42, 42, 42))
         painter.drawRoundedRect(2, 2, 28, 28, 4, 4)
 
-        if icon_name in ("copy", "move"):
+        if icon_name in ("back", "forward", "up"):
+            painter.save()
+            if icon_name == "forward":
+                painter.translate(32, 0)
+                painter.scale(-1, 1)
+            elif icon_name == "up":
+                painter.translate(16, 16)
+                painter.rotate(90)
+                painter.translate(-16, -16)
+            painter.setBrush(QColor(195, 235, 150) if icon_name == "up" else QColor(180, 220, 255))
+            painter.drawPolygon(QPolygonF([
+                QPointF(6, 16), QPointF(14, 8), QPointF(14, 13),
+                QPointF(26, 13), QPointF(26, 19), QPointF(14, 19), QPointF(14, 24),
+            ]))
+            painter.restore()
+        elif icon_name in ("copy", "move"):
             color = QColor(255, 220, 70) if icon_name == "copy" else QColor(255, 174, 70)
             painter.setPen(color)
             font = QFont()
@@ -896,12 +944,12 @@ class MainWindow(QMainWindow):
                     event.accept()
                     return True
         if obj in (self.thumbnail_view, self.thumbnail_view.viewport()):
-            search_text = self.thumbnail_shift_search_text(event)
+            search_text = self.thumbnail_filename_jump_text(event)
             if search_text and event.type() == QEvent.Type.ShortcutOverride:
                 event.accept()
                 return True
             if search_text and event.type() == QEvent.Type.KeyPress:
-                self.thumbnail_view.keyboardSearch(search_text)
+                self.thumbnail_view.jump_to_filename(search_text)
                 event.accept()
                 return True
 
@@ -931,19 +979,23 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
-    def thumbnail_shift_search_text(self, event):
+    def thumbnail_filename_jump_text(self, event):
         if event.type() not in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress):
             return ""
 
         modifiers = event.modifiers()
-        if not (modifiers & Qt.KeyboardModifier.ShiftModifier):
-            return ""
-        if modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier):
-            return ""
-
         text = event.text()
-        if len(text) == 1 and text.isalpha():
-            return text.lower()
+        if modifiers == Qt.KeyboardModifier.AltModifier:
+            key = event.key()
+            if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+                return chr(key)
+            if len(text) == 1 and text.isalpha():
+                return text.casefold()
+            if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+                return chr(key).casefold()
+        # Retain the existing Shift+letter alternative, now using filenames.
+        if modifiers == Qt.KeyboardModifier.ShiftModifier and len(text) == 1 and text.isalpha():
+            return text.casefold()
         return ""
 
     def load_address_history(self):
@@ -999,14 +1051,17 @@ class MainWindow(QMainWindow):
         set_last_folder(folder_path)
 
         if not add_to_navigation_history:
+            self.update_folder_navigation_buttons()
             return
         if self.navigation_index >= 0 and self.navigation_history[self.navigation_index] == folder_path:
+            self.update_folder_navigation_buttons()
             return
         if self.navigation_index < len(self.navigation_history) - 1:
             self.navigation_history = self.navigation_history[:self.navigation_index + 1]
         self.navigation_history.append(folder_path)
         self.navigation_history = self.navigation_history[-100:]
         self.navigation_index = len(self.navigation_history) - 1
+        self.update_folder_navigation_buttons()
 
     def on_quick_access_clicked(self, item):
         self.quick_access_list.viewport().repaint()
@@ -1556,8 +1611,18 @@ class MainWindow(QMainWindow):
         for drive_key, button in self.drive_buttons.items():
             button.setChecked(drive_key == selected_key)
 
-    def go_to_parent_folder(self):
-        if self.focusWidget() == self.address_bar.lineEdit():
+    def update_folder_navigation_buttons(self):
+        self.folder_navigation_buttons["back"].setEnabled(self.navigation_index > 0)
+        self.folder_navigation_buttons["forward"].setEnabled(
+            0 <= self.navigation_index < len(self.navigation_history) - 1
+        )
+        folder = os.path.abspath(self.current_folder_path) if self.current_folder_path else ""
+        self.folder_navigation_buttons["up"].setEnabled(
+            bool(folder and os.path.dirname(folder) != folder)
+        )
+
+    def go_to_parent_folder(self, *, ignore_address_focus=False):
+        if not ignore_address_focus and self.focusWidget() == self.address_bar.lineEdit():
             return
         if not self.current_folder_path:
             return
@@ -1577,6 +1642,7 @@ class MainWindow(QMainWindow):
         self.navigation_index -= 1
         folder_path = self.navigation_history[self.navigation_index]
         self.navigate_to_folder(folder_path, add_to_history=False)
+        self.update_folder_navigation_buttons()
 
     def go_forward_folder(self):
         if self.navigation_index >= len(self.navigation_history) - 1:
@@ -1585,6 +1651,7 @@ class MainWindow(QMainWindow):
         self.navigation_index += 1
         folder_path = self.navigation_history[self.navigation_index]
         self.navigate_to_folder(folder_path, add_to_history=False)
+        self.update_folder_navigation_buttons()
 
     def navigate_to_folder(self, folder_path, add_to_history=True):
         if not os.path.isdir(folder_path):
@@ -3051,7 +3118,12 @@ class MainWindow(QMainWindow):
                 if not same_path and os.path.lexists(new_path):
                     return collision_message
                 try:
-                    os.rename(old_path, new_path)
+                    rename_with_sharing_retry(
+                        old_path, new_path,
+                        cancelled=QThread.currentThread().isInterruptionRequested,
+                    )
+                except InterruptedError:
+                    raise
                 except OSError as error:
                     if isinstance(error, FileExistsError) or getattr(error, "winerror", None) in (80, 183):
                         return collision_message
@@ -3059,9 +3131,36 @@ class MainWindow(QMainWindow):
                 return ""
 
             dialog = RenameDialog(old_name, parent_override or self, rename_callback=try_rename)
-            if dialog.exec() and dialog.new_filename != old_name:
-                new_path = os.path.join(folder, dialog.new_filename)
-                self.update_renamed_thumbnail_item(old_row, old_path, new_path)
+            reader_state = None
+
+            def pause_readers():
+                nonlocal reader_state
+                view = self.thumbnail_view
+                previous_background = view.interactive_background_paused
+                previous_file_access = view.file_access_paused
+                video_stopped = self.pause_file_access([old_path])
+                reader_state = (video_stopped, previous_background, previous_file_access)
+                view.set_file_access_paused(True)
+
+            def resume_readers(succeeded=False):
+                nonlocal reader_state
+                # On success, update all model/viewer paths before restarting.
+                if succeeded or reader_state is None:
+                    return
+                video_stopped, previous_background, previous_file_access = reader_state
+                reader_state = None
+                self.resume_file_access(video_stopped)
+                self.thumbnail_view.set_background_activity_paused(previous_background)
+                self.thumbnail_view.set_file_access_paused(previous_file_access)
+
+            dialog.rename_started.connect(pause_readers)
+            dialog.rename_finished.connect(resume_readers)
+            try:
+                if dialog.exec() and dialog.new_filename != old_name:
+                    new_path = os.path.join(folder, dialog.new_filename)
+                    self.update_renamed_thumbnail_item(old_row, old_path, new_path)
+            finally:
+                resume_readers()
             self.refocus_fullscreen_if_visible()
 
     def open_batch_rename_dialog(self, paths, parent):

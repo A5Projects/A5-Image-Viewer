@@ -395,6 +395,15 @@ def set_crop_auto_name_copies(enabled: bool):
     config["crop_auto_name_copies"] = bool(enabled)
     save_config(config)
 
+def get_crop_output_folder() -> str:
+    folder = normalize_folder_path(load_config().get("crop_output_folder", ""))
+    return folder if folder and os.path.isdir(folder) else ""
+
+def set_crop_output_folder(folder: str):
+    config = load_config()
+    config["crop_output_folder"] = normalize_folder_path(folder)
+    save_config(config)
+
 def get_adjustment_settings():
     config = load_config()
     enabled = bool(config.get("remember_adjustments", False))

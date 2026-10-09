@@ -43,19 +43,22 @@ ROTATE_OPERATIONS = (
 )
 
 
-def rename_with_sharing_retry(source, destination, timeout_seconds=10.0):
+def rename_with_sharing_retry(source, destination, timeout_seconds=10.0, cancelled=None):
     deadline = time.monotonic() + max(0.0, timeout_seconds)
     delay = 0.05
     while True:
+        if cancelled is not None and cancelled():
+            raise InterruptedError("Rename cancelled.")
         try:
             os.rename(source, destination)
             return
         except OSError as error:
             if getattr(error, "winerror", None) not in (32, 33):
                 raise
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise
-            time.sleep(delay)
+            time.sleep(min(delay, remaining))
             delay = min(0.25, delay * 1.5)
 
 

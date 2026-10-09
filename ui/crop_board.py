@@ -11,7 +11,8 @@ from PyQt6.QtGui import (QPixmap, QColor, QPen, QShortcut, QKeySequence, QAction
                          QImageReader, QIcon, QPainter, QPolygonF, QTransform)
 from utils.file_ops import (get_crop_ask_overwrite, set_crop_ask_overwrite,
                             get_crop_auto_name_copies,
-                            set_crop_auto_name_copies)
+                            set_crop_auto_name_copies,
+                            get_crop_output_folder, set_crop_output_folder)
 from utils.image_loading import ImageLoadError, read_full_image, MAX_PREFETCH_IMAGE_BYTES
 
 
@@ -155,7 +156,7 @@ class ResizableRectItem(QGraphicsRectItem):
         self.mouse_press_pos = None
         self.mouse_press_rect = None
         
-        pen = QPen(QColor(0, 255, 255), 2, Qt.PenStyle.DashLine)
+        pen = QPen(QColor(0, 255, 255), 1)
         pen.setCosmetic(True)
         self.setPen(pen)
         self.setBrush(QColor(255, 255, 255, 30)) # slight fill to catch clicks
@@ -172,10 +173,9 @@ class ResizableRectItem(QGraphicsRectItem):
         return None
 
     def hoverMoveEvent(self, moveEvent):
-        if self.isSelected():
-            handle = self.handle_at(moveEvent.pos())
-            cursor = Qt.CursorShape.SizeAllCursor if handle is None else self.handle_cursors[handle]
-            self.setCursor(cursor)
+        handle = self.handle_at(moveEvent.pos())
+        cursor = Qt.CursorShape.SizeAllCursor if handle is None else self.handle_cursors[handle]
+        self.setCursor(cursor)
         super().hoverMoveEvent(moveEvent)
 
     def hoverLeaveEvent(self, moveEvent):
@@ -307,14 +307,19 @@ class ResizableRectItem(QGraphicsRectItem):
         return path
 
     def paint(self, painter, option, widget=None):
-        super().paint(painter, option, widget)
-        if self.isSelected():
-            painter.setBrush(QColor("white"))
-            pen = QPen(QColor("black"), 1)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
-            for v in self.handles.values():
-                painter.drawRect(v)
+        # QGraphicsRectItem.paint adds a second selection frame around the
+        # bounding rectangle (including handles), outside the actual crop.
+        painter.save()
+        painter.setPen(self.pen())
+        painter.setBrush(self.brush())
+        painter.drawRect(self.rect())
+        painter.setBrush(QColor("white"))
+        pen = QPen(QColor("black"), 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        for v in self.handles.values():
+            painter.drawRect(v)
+        painter.restore()
 
 class CropView(QGraphicsView):
     def __init__(self, parent=None):
@@ -544,10 +549,14 @@ class CropBoard(QDialog):
 
         self.auto_name_check = QCheckBox("Auto")
         self.auto_name_check.setToolTip(
-            "Save Crop to File immediately using the next available _crop name"
+            "Checked: save immediately in the current image's folder.\n"
+            "Unchecked: choose a folder, starting at the last manual destination.\n"
+            "Both use the next available _crop, _crop2, ... filename."
         )
         self.auto_name_check.setChecked(get_crop_auto_name_copies())
         self.auto_name_check.toggled.connect(set_crop_auto_name_copies)
+        self.auto_name_check.toggled.connect(self.update_crop_file_tooltip)
+        self.update_crop_file_tooltip()
         toolbar.addWidget(self.auto_name_check)
         
         self.overwrite_check = QCheckBox("Ask")
@@ -1119,25 +1128,35 @@ class CropBoard(QDialog):
         self.current_pixmap = self.original_pixmap
         self.update_current_pixmap(clear_selection=True)
 
+    def update_crop_file_tooltip(self):
+        destination = (
+            "Save immediately in the current image's folder."
+            if self.auto_name_check.isChecked() else
+            "Choose a folder, starting at the last manual destination (remembered across restarts)."
+        )
+        self.crop_file_btn.setToolTip(
+            f"Crop to File (F)\n{destination}\n"
+            "Uses the next available _crop, _crop2, ... filename."
+        )
+
     def crop_to_file(self):
         if self.view.selection_rect_item and self.view.selection_rect_item.rect().isValid() and not self.view.selection_rect_item.rect().isEmpty():
             rect = self.view.selection_rect_item.rect().toRect()
-            cropped = self.current_pixmap.copy(rect)
-
-            default_path = self.unique_cropped_path()
-            filters = "Images (*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tif *.tiff);;All Files (*)"
-            if self.auto_name_check.isChecked():
-                new_path = default_path
-            else:
-                new_path, _ = QFileDialog.getSaveFileName(
+            automatic = self.auto_name_check.isChecked()
+            folder = os.path.dirname(os.path.abspath(self.image_path))
+            if not automatic:
+                folder = QFileDialog.getExistingDirectory(
                     self,
-                    "Save Cropped Image",
-                    default_path,
-                    filters,
+                    "Save Cropped Image — Choose Folder",
+                    get_crop_output_folder() or folder,
                 )
-            if not new_path:
+            if not folder:
                 return False
+            new_path = self.unique_cropped_path(folder)
+            cropped = self.current_pixmap.copy(rect)
             if cropped.save(new_path, quality=-1):
+                if not automatic:
+                    set_crop_output_folder(folder)
                 self.saved_any = True
                 self.image_saved.emit(new_path)
                 return True
@@ -1148,8 +1167,9 @@ class CropBoard(QDialog):
             )
         return False
 
-    def unique_cropped_path(self):
-        folder, name = os.path.split(self.image_path)
+    def unique_cropped_path(self, folder=None):
+        source_folder, name = os.path.split(self.image_path)
+        folder = source_folder if folder is None else folder
         stem, extension = os.path.splitext(name)
         candidate = os.path.join(folder, f"{stem}_crop{extension}")
         counter = 2

@@ -1,4 +1,5 @@
 import os
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout, QFileDialog,
     QLabel, QLineEdit, QMessageBox, QGridLayout,
@@ -14,10 +15,32 @@ WINDOWS_RESERVED_FILENAMES = {
 }
 
 
+class _RenameWorker(QThread):
+    def __init__(self, callback, filename, parent):
+        super().__init__(parent)
+        self.callback = callback
+        self.filename = filename
+        self.error = ""
+        self.cancelled = False
+
+    def run(self):
+        try:
+            self.error = self.callback(self.filename) or ""
+        except InterruptedError:
+            self.cancelled = True
+        except Exception as error:
+            self.error = f"Could not rename the file: {error}"
+
+
 class RenameDialog(QDialog):
+    rename_started = pyqtSignal()
+    rename_finished = pyqtSignal(bool)
+
     def __init__(self, filename, parent=None, rename_callback=None):
         super().__init__(parent)
         self.rename_callback = rename_callback
+        self.worker = None
+        self._cancel_requested = False
         self.original_filename = filename
         self.new_filename = filename
         basename, extension = os.path.splitext(filename)
@@ -47,13 +70,13 @@ class RenameDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        rename_button = QPushButton("&Rename")
-        rename_button.setDefault(True)
-        rename_button.clicked.connect(self.accept_rename)
-        cancel_button = QPushButton("&Cancel")
-        cancel_button.clicked.connect(self.reject)
-        buttons.addWidget(rename_button)
-        buttons.addWidget(cancel_button)
+        self.rename_button = QPushButton("&Rename")
+        self.rename_button.setDefault(True)
+        self.rename_button.clicked.connect(self.accept_rename)
+        self.cancel_button = QPushButton("&Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(self.rename_button)
+        buttons.addWidget(self.cancel_button)
         layout.addLayout(buttons)
 
         self.name_edit.selectAll()
@@ -81,21 +104,67 @@ class RenameDialog(QDialog):
         return ""
 
     def accept_rename(self):
+        if self.worker is not None:
+            return
         filename = self.composed_filename()
         error = self.filename_error(filename)
         if error:
             QMessageBox.warning(self, "Rename", error)
             return
         if self.rename_callback is not None:
-            error = self.rename_callback(filename)
-            if error:
-                self.error_label.setText(error)
-                self.error_label.show()
-                self.name_edit.setFocus()
-                self.name_edit.selectAll()
-                return
+            self._cancel_requested = False
+            self.set_rename_busy(True)
+            self.error_label.hide()
+            self.worker = _RenameWorker(self.rename_callback, filename, self)
+            self.worker.finished.connect(self.finish_rename)
+            self.rename_started.emit()
+            self.worker.start()
+            return
         self.new_filename = filename
         self.accept()
+
+    def set_rename_busy(self, busy):
+        self.name_edit.setEnabled(not busy)
+        self.extension_edit.setEnabled(not busy)
+        self.rename_button.setEnabled(not busy)
+        self.rename_button.setText("Renaming…" if busy else "&Rename")
+        self.cancel_button.setEnabled(True)
+
+    def finish_rename(self):
+        worker, self.worker = self.worker, None
+        self.set_rename_busy(False)
+        succeeded = not worker.error and not worker.cancelled
+        self.rename_finished.emit(succeeded)
+        worker.deleteLater()
+        # A completed filesystem rename wins a simultaneous Cancel request.
+        # The caller must still update its paths to match the actual file.
+        if succeeded:
+            self.new_filename = worker.filename
+            self.accept()
+        elif self._cancel_requested or worker.cancelled:
+            super().reject()
+        else:
+            self.error_label.setText(worker.error)
+            self.error_label.show()
+            self.adjustSize()
+            self.name_edit.setFocus()
+            self.name_edit.selectAll()
+
+    def reject(self):
+        if self.worker is not None:
+            self._cancel_requested = True
+            self.worker.requestInterruption()
+            self.cancel_button.setEnabled(False)
+            self.rename_button.setText("Cancelling…")
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None:
+            self.reject()
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 class CopyMoveDialog(QDialog):
     def __init__(self, parent=None, is_move=False):

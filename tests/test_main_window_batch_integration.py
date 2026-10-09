@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QApplication, QHeaderView, QMessageBox, QTreeView
 
 from ui.batch_operations import BatchRenameWorker
 from ui.main_window import MainWindow
+from ui.dialogs import RenameDialog
 from ui.thumbnail_view import KIND_ROLE, PATH_ROLE
 
 
@@ -726,15 +727,23 @@ class MainWindowBatchIntegrationTests(unittest.TestCase):
                 window.current_item_kind = "image"
 
                 with (
-                    patch("ui.main_window.RenameDialog") as dialog_class,
+                    patch.object(RenameDialog, "exec", lambda dialog: accept_rename(dialog)),
                     patch.object(window, "load_current_folder") as reload_folder,
                 ):
-                    def accept_rename():
-                        callback = dialog_class.call_args.kwargs["rename_callback"]
-                        self.assertEqual(callback("new-name.webp"), "")
-                        return 1
-                    dialog_class.return_value.exec.side_effect = accept_rename
-                    dialog_class.return_value.new_filename = "new-name.webp"
+                    def accept_rename(dialog):
+                        dialog.name_edit.setText("new-name")
+                        dialog.extension_edit.setText("webp")
+                        dialog.accept_rename()
+                        deadline = time.monotonic() + 3
+                        while dialog.worker is not None and time.monotonic() < deadline:
+                            QTest.qWait(10)
+                        if dialog.worker is not None:
+                            dialog.reject()
+                            dialog.worker.wait(2000)
+                            self.app.processEvents()
+                        self.assertEqual(dialog.error_label.text(), "")
+                        self.assertEqual(dialog.new_filename, "new-name.webp")
+                        return dialog.result()
                     window.rename_file()
 
                 self.assertFalse(os.path.exists(old_path))

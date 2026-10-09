@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QGraphicsRectItem
 
 from ui.crop_board import CropBoard
 from ui.main_window import MainWindow
+from utils import file_ops
 
 
 class CropTransformTests(unittest.TestCase):
@@ -22,6 +24,9 @@ class CropTransformTests(unittest.TestCase):
     def setUp(self):
         CropBoard._session_navigation_choice = None
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.config_patch = patch.object(file_ops, "CONFIG_FILE", os.path.join(self.temp_dir.name, "config.json"))
+        self.config_patch.start()
+        file_ops.set_startup_behavior("empty")
         self.image_path = os.path.join(self.temp_dir.name, "image.png")
         Image.new("RGB", (6, 4), "red").save(self.image_path)
         self.board = CropBoard(self.image_path)
@@ -30,6 +35,7 @@ class CropTransformTests(unittest.TestCase):
     def tearDown(self):
         self.board.reject()
         CropBoard._session_navigation_choice = None
+        self.config_patch.stop()
         self.temp_dir.cleanup()
 
     def test_rotate_and_flip_are_undoable_unsaved_changes(self):
@@ -104,7 +110,9 @@ class CropTransformTests(unittest.TestCase):
         self.assertTrue(button.property("cropPressFeedback"))
         QTest.mouseRelease(button, Qt.MouseButton.LeftButton)
         self.assertTrue(button.property("cropPressFeedback"))
-        QTest.qWait(170)
+        deadline = time.monotonic() + 2.0
+        while button.property("cropPressFeedback") and time.monotonic() < deadline:
+            QTest.qWait(10)
         self.assertFalse(button.property("cropPressFeedback"))
 
         symbol_button = self.board.tool_buttons["crop"]
@@ -220,6 +228,89 @@ class CropTransformTests(unittest.TestCase):
         self.assertTrue(
             os.path.isfile(os.path.join(self.temp_dir.name, "image_crop2.png"))
         )
+
+    def test_manual_crop_numbers_in_chosen_folder_and_remembers_it_on_reopen(self):
+        output = os.path.join(self.temp_dir.name, "crops")
+        os.mkdir(output)
+        existing = os.path.join(output, "image_crop.png")
+        Image.new("RGB", (1, 1), "blue").save(existing)
+        os.mkdir(os.path.join(output, "image_crop2.png"))
+        self.board.select_all()
+        self.board.view.selection_rect_item.setRect(QRectF(1, 1, 3, 2))
+        saved = []
+        self.board.image_saved.connect(saved.append)
+        with patch("ui.crop_board.QFileDialog.getExistingDirectory", return_value=output) as choose:
+            self.assertTrue(self.board.crop_to_file())
+        self.assertEqual(choose.call_args.args[2], self.temp_dir.name)
+        result = os.path.join(output, "image_crop3.png")
+        self.assertEqual(saved, [result])
+        with Image.open(result) as image:
+            self.assertEqual(image.size, (3, 2))
+            self.assertEqual(image.getpixel((0, 0)), (255, 0, 0))
+        with Image.open(existing) as image:
+            self.assertEqual(image.getpixel((0, 0)), (0, 0, 255))
+        self.assertEqual(file_ops.load_config()["crop_output_folder"], output)
+        self.assertFalse(self.board.has_unsaved_changes())
+
+        self.board.reject()
+        self.board = CropBoard(self.image_path)
+        self.board.select_all()
+        with patch("ui.crop_board.QFileDialog.getExistingDirectory", return_value=output) as choose:
+            self.assertTrue(self.board.crop_to_file())
+        self.assertEqual(choose.call_args.args[2], output)
+        self.assertTrue(os.path.isfile(os.path.join(output, "image_crop4.png")))
+
+    def test_auto_crop_follows_current_image_without_changing_manual_destination(self):
+        manual = os.path.join(self.temp_dir.name, "manual")
+        other = os.path.join(self.temp_dir.name, "other")
+        os.mkdir(manual)
+        os.mkdir(other)
+        file_ops.set_crop_output_folder(manual)
+        self.board.auto_name_check.setChecked(True)
+        self.assertIn("current image's folder", self.board.crop_file_btn.toolTip())
+        self.board.select_all()
+        other_path = os.path.join(other, "second.png")
+        Image.new("RGB", (9, 7), "green").save(other_path)
+        with patch("ui.crop_board.QFileDialog.getExistingDirectory") as choose:
+            self.assertTrue(self.board.crop_to_file())
+            self.board.load_image(other_path)
+            self.board.select_all()
+            self.assertTrue(self.board.crop_to_file())
+            choose.assert_not_called()
+        self.assertTrue(os.path.isfile(os.path.join(self.temp_dir.name, "image_crop.png")))
+        self.assertTrue(os.path.isfile(os.path.join(other, "second_crop.png")))
+        self.assertEqual(os.listdir(manual), [])
+        self.assertEqual(file_ops.get_crop_output_folder(), manual)
+        self.board.auto_name_check.setChecked(False)
+        self.assertIn("last manual destination", self.board.crop_file_btn.toolTip())
+
+    def test_cancelled_or_failed_manual_crop_preserves_destination_and_selection(self):
+        file_ops.set_crop_output_folder(self.temp_dir.name)
+        self.board.select_all()
+        selection = self.board.view.selection_rect_item.rect()
+        saved = []
+        self.board.image_saved.connect(saved.append)
+        with patch("ui.crop_board.QFileDialog.getExistingDirectory", return_value=""):
+            self.assertFalse(self.board.crop_to_file())
+        missing = os.path.join(self.temp_dir.name, "missing")
+        with (patch("ui.crop_board.QFileDialog.getExistingDirectory", return_value=missing),
+              patch("ui.crop_board.QMessageBox.warning") as warning):
+            self.assertFalse(self.board.crop_to_file())
+            warning.assert_called_once()
+        self.assertEqual(file_ops.get_crop_output_folder(), self.temp_dir.name)
+        self.assertEqual(self.board.view.selection_rect_item.rect(), selection)
+        self.assertEqual(saved, [])
+        self.assertFalse(self.board.saved_any)
+        self.assertFalse(os.path.exists(os.path.join(self.temp_dir.name, "image_crop.png")))
+
+    def test_invalid_or_unavailable_manual_folder_falls_back_to_current_image_folder(self):
+        self.board.select_all()
+        for value in (None, 123, [], "", self.image_path, os.path.join(self.temp_dir.name, "missing")):
+            with self.subTest(value=value):
+                file_ops.save_config({"crop_output_folder": value})
+                with patch("ui.crop_board.QFileDialog.getExistingDirectory", return_value="") as choose:
+                    self.assertFalse(self.board.crop_to_file())
+                self.assertEqual(choose.call_args.args[2], self.temp_dir.name)
 
 
 if __name__ == "__main__":
