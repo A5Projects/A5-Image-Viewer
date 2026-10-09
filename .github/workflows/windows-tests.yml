@@ -54,6 +54,9 @@ jobs:
       - name: Run unit tests
         env:
           QT_QPA_PLATFORM: offscreen
+          # Avoid the runner's 8.3 profile alias (RUNNER~1), which Qt expands.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 
       # The BAT reuses .venv, installs PyInstaller only when needed, and calls

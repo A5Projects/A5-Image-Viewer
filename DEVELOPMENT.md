@@ -113,6 +113,8 @@ resources, tests, dependencies, and build scripts still trigger tests.
 Routine runs install only `requirements.txt` (PyQt6 and Pillow), use offscreen
 Qt for the unit tests, and cache pip downloads. The existing source startup
 test explicitly exercises the Windows platform plugin in a child process.
+The test step uses `runner.temp` for `TEMP`/`TMP` so Python and Qt see the same
+path spelling instead of the runner's short `RUNNER~1` profile alias.
 New runs cancel superseded runs for the same event and ref.
 
 For a pre-release packaged check, open **Actions > Windows tests > Run
