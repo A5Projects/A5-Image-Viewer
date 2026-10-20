@@ -5,7 +5,8 @@ A5ImageViewer. It describes the architecture, important implementation choices,
 build and test workflow, and the behavioral contracts that are easy to break
 when changing the application.
 
-It includes the October 9, 2026 rename-reader coordination and timer-test fix,
+It includes the October 16, 2026 signed-angle rotation, viewer double-click,
+manual release check and crop aspect-ratio sizing, October 9 rename-reader coordination and timer-test fix,
 September 27 folder-tree rollback, September 25 crop-saving,
 selection-outline, and folder navigation buttons, and September 23 Alt navigation.
 Read [README.md](README.md) first for the product goals and user
@@ -57,7 +58,7 @@ preflight checks use worker threads. Results return to the GUI through Qt
 signals.
 
 There is no plugin system, dependency injection framework, ORM, telemetry,
-network service, or updater.
+network service, or automatic updater. The About release check is manual only.
 
 ## 3. Running, Testing, and Building
 
@@ -89,7 +90,7 @@ fullscreen. Passing a folder opens the browser at that folder.
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The current suite contains 230 tests. Test modules set
+The current suite contains 245 tests. Test modules set
 `QT_QPA_PLATFORM=offscreen` where GUI construction is needed. Tests that write
 configuration should redirect `utils.file_ops.CONFIG_FILE` to a temporary
 directory and restore it during teardown. Never intentionally run a settings
@@ -202,6 +203,13 @@ deletes/replaces those runtime files but deliberately preserves the generated
   the preference for future windows. About itself does not save pending editor
   or Settings changes. Update shortcut descriptions when key bindings change.
 - `utils/app_info.py`: app version/date, GitHub links, and bundled document paths.
+- `utils/update_check.py`: asynchronous Qt Network request to GitHub's latest
+  stable release endpoint. Only About's button calls `check()`; the network manager
+  is created lazily on that call. A 15-second deadline, bounded response size,
+  close cancellation and explicit error messages prevent background retry or
+  blocking. Comparison uses numeric version/date/rebuild from `RELEASE_TAG`, not
+  just `APP_VERSION`. No file paths, settings, or credentials are sent. Tests use
+  fake replies and assert that opening/closing About makes no request.
 
 ### Entry point and coordination
 
@@ -219,6 +227,7 @@ deletes/replaces those runtime files but deliberately preserves the generated
   previewing and basic zoom/pan behavior.
 - `ui/fullscreen_viewer.py`: fullscreen dialog, pixel selection, HUD,
   navigation, slideshow, shortcuts, and context menu.
+  Left double-click uses the same close and save-cancellation path as Enter.
 - `ui/folder_shortcuts.py`: compact two-column system/favorites lists and the
   shrinkable drive-button strip.
 
@@ -227,8 +236,19 @@ deletes/replaces those runtime files but deliberately preserves the generated
 - `ui/crop_board.py`: serial crop/transform editor, selection handles, five
   entry undo history, save prompts, automatic `_crop` naming, and bounded
   adjacent-image prefetch.
+  Each undo entry holds the pixmap plus a copied selection rectangle. Signed-angle
+  rotation uses the existing CPU Qt transform path, expands the canvas, and clears
+  selection; Undo restores both. Opaque sources get black corners; alpha is kept.
 - `ui/adjust_board.py`: serial Pillow-based adjustment and resize editor,
   bounded preview, zoom/pan, save/copy workflows, and setting carryover.
+  Arbitrary rotation is an absolute angle from the original orientation, applied
+  only by Rotate or Enter in the field. Applying 0° removes rotation without changing
+  other edits. The angle resets per image and with Reset.
+  It is included in the unsaved signature but excluded from remembered settings.
+  Pillow rotates from the source after adjustments/resizing at preview or export
+  resolution, so repeated previews do not resample the original. Preview dimensions
+  remain bounded to 1200 × 1200 after rotation. Signed input consumes +/- before
+  the preview zoom shortcuts. Enter in that field applies rotation, without saving.
 - `ui/batch_operations.py`: two-phase batch rename and atomic batch rotate/flip.
 - `ui/convert_dialog.py`: threaded format conversion and optional transforms.
 
@@ -853,13 +873,13 @@ These are the most important engineering constraints for future changes:
 
 | Test module | Primary coverage |
 | --- | --- |
-| `test_adjust_board.py` | effects, resize geometry/resampling, serial navigation, save naming, zoom |
+| `test_adjust_board.py` | effects, resize geometry/resampling, signed rotation, bounded preview/full-size saving, serial navigation, save naming, zoom |
 | `test_adjustment_settings.py` | persisted/clamped adjustment settings |
 | `test_appearance.py` | themes, favorites layout, repaint without reload |
 | `test_batch_operations.py` | rename parser/plans/rollback and atomic transforms |
 | `test_config_paths.py` | path normalization and frozen/source config location |
 | `test_convert_dialog.py` | conversion collisions, source deletion, and dialog worker lifetime |
-| `test_crop_transforms.py` | crop selection, transforms, prompts, shortcuts, naming |
+| `test_crop_transforms.py` | crop selection, signed rotation, undo with selection restoration, transforms, prompts, shortcuts, naming |
 | `test_selection_outline.py` | one actual selection edge and always-visible handles at Fit/manual scales |
 | `test_delete_files.py` | Shell operation batching, cancellation, sharing retries |
 | `test_dialogs.py` | split rename fields and Windows filename validation |
@@ -867,10 +887,11 @@ These are the most important engineering constraints for future changes:
 | `test_favorites.py` | aliases and favorite-specific sort persistence |
 | `test_folder_previews.py` | delayed non-recursive mosaics and stale cancellation |
 | `test_fullscreen_hud.py` | HUD, pixel selection, zoom, focus, slideshow, shortcuts |
-| `test_fullscreen_moves.py` | queued moves, normalized paths, next-image selection, cancellation, and empty-folder exit |
+| `test_fullscreen_moves.py` | queued moves, normalized paths, next-image selection, double-click close/cancellation in both modes, and empty-folder exit |
 | `test_image_loading.py` | decoding limits/settings, Qt/Pillow loading, error recovery, reader release, large-image prefetch exclusion, CPU smoothing across zoom levels |
 | `test_new_instance.py` | launch paths/errors, detached process lifetime, sequential shared config access, toolbar/folder commands, compact viewer menu and removed sync button |
 | `test_about_dialog.py` | offline content, contextual F1, disabling/re-enabling F1, Settings access, and unchanged pending preferences |
+| `test_update_check.py` | explicit-only requests, release/date/rebuild comparison, result messages, errors, timeout, response size limit, and close cancellation |
 | `test_viewer_modes.py` | mode/settings persistence, geometry fallback, F11, resizing/zoom, and close cancellation |
 | `test_viewer_workflows.py` | folder deletion, browser synchronization, Space, fixed HUD, crop zoom/pan and cached navigation |
 | `test_text_files.py` | TXT filtering, external opening, mixed transfers/clipboard, conflicts, and incremental updates |

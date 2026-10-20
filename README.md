@@ -130,6 +130,9 @@ by window, the GPLv3 license, and the offline changelog. F1 opens the relevant
 shortcut section in the browser, viewer, Crop, Adjust, or Settings. About's
 **Disable F1 shortcut** checkbox applies immediately and is remembered; the
 Settings button stays available. Release history is also in [CHANGELOG.md](CHANGELOG.md).
+**Check for updates** in About contacts GitHub only when clicked, then displays
+whether a newer release is available. It never checks automatically or downloads
+anything; use the existing Releases link to get an update.
 
 Use the app-icon **New instance** button on the toolbar or **Ctrl+Shift+N** to open the current
 folder in another independent application instance. Folder context menus in
@@ -175,7 +178,8 @@ state are remembered. Fullscreen remains the default for existing settings.
 In either viewer mode, **Space** advances to the next image. **Backspace** or
 the context-menu **Show in browser** action selects and scrolls to the displayed
 image in the thumbnail browser without closing the viewer. Escape still returns to the image where
-viewing started; Enter closes on the displayed image. The filename/resolution
+viewing started; Enter or a left double-click closes on the displayed image,
+using the same save/discard/cancel handling. The filename/resolution
 overlay stays fixed in the top-left corner while zooming and panning.
 The viewer context menu uses compact spacing; additional next/previous-image
 shortcuts are listed in tooltips. There is no top-right Show in browser button.
@@ -190,6 +194,18 @@ last manual destination. Both modes preserve the image format and use the next
 available `name_crop.ext`, `name_crop2.ext`, and so on in the chosen folder.
 Crop Board and the image viewer use one selection outline with visible resize
 handles; the extra outer selection frame has been removed.
+
+Both editors support rotation by a signed number of degrees: **+** clockwise,
+**−** counter-clockwise (including fractional degrees). Image Adjust has a degree
+field and **Rotate** button in its bottom row. Click Rotate or press Enter in the
+field to set the absolute angle from the original orientation: applying 70° after
+30° sets it to 70°. Applying 0° removes rotation while keeping all other adjustments.
+Rotation is applied after resizing, with a small preview and full-resolution saving.
+Crop Board has a **Rotate by angle…** symbol and context-menu entry. Rotation
+clears the current crop box; Undo restores both the previous image and box.
+Draw a new box to crop the rotated result. The canvas expands to keep the whole
+image, using black corners for opaque images and transparency for alpha images.
+Neither editor saves the rotation until you use its normal save controls.
 
 Settings provides **Maximum decoded image size** under Resource Usage, defaulting
 to **1,024 MiB** (adjustable from 64 to 65,536 MiB). This is a per-image decoding

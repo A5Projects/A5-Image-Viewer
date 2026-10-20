@@ -55,6 +55,95 @@ class AdjustBoardTests(unittest.TestCase):
         self.assertEqual(self.board.value_inputs["Gamma"].value(), 1.0)
         self.assertFalse(self.board.effect_checks["Invert"].isChecked())
 
+    def test_rotation_preview_and_saved_full_resolution_use_same_orientation(self):
+        self.board.rotation_input.setValue(27.25)
+        self.board.btn_rotate.click()
+        self.assertTrue(self.board.has_unsaved_changes())
+        preview = self.board.preview_current_pil
+        self.assertGreater(preview.width, 8)
+        self.assertGreater(preview.height, 6)
+        self.assertEqual(preview.getpixel((0, 0)), (0, 0, 0, 0))
+        output = os.path.join(self.temp_dir.name, "rotated.png")
+        self.assertTrue(self.board.save_result_to_path(output))
+        with Image.open(output) as saved:
+            self.assertEqual(saved.size, preview.size)
+            self.assertEqual(saved.tobytes(), preview.tobytes())
+        with Image.open(self.image_path) as original:
+            self.assertEqual(original.size, (8, 6))
+        self.assertFalse(self.board.has_unsaved_changes())
+
+    def test_rotation_reversal_reset_and_navigation_do_not_resample_source(self):
+        original = self.board.original_pil.tobytes()
+        self.board.rotation_input.setValue(23.5)
+        self.board.apply_rotation()
+        self.board.rotation_input.setValue(0)
+        self.board.apply_rotation()
+        self.assertEqual(self.board.render_final_image().tobytes(), original)
+        self.assertFalse(self.board.has_unsaved_changes())
+        self.board.rotation_input.setValue(90)
+        self.board.apply_rotation()
+        self.assertEqual(self.board.render_final_image().size, (6, 8))
+        self.board.reset_adjustments()
+        self.assertEqual(self.board.render_final_image().tobytes(), original)
+        self.board.rotation_input.setValue(-90)
+        self.board.apply_rotation()
+        self.board.check_remember.setChecked(True)
+        self.board.load_image(self.second_path)
+        self.assertEqual(self.board.rotation_degrees, 0)
+        self.assertEqual(self.board.render_final_image().size, (12, 4))
+
+    def test_absolute_rotation_replaces_angle_and_zero_keeps_other_adjustments(self):
+        self.board.sliders["Brightness"].setValue(20)
+        self.board.spin_width.setValue(4)
+        self.board.apply_preview_adjustments()
+        unrotated = self.board.render_final_image()
+        for angle in (30, 70, 70, -15.5, 0, 360, -360):
+            with self.subTest(angle=angle):
+                before = self.board.preview_current_pil.tobytes()
+                self.board.rotation_input.setValue(angle)
+                self.assertEqual(self.board.preview_current_pil.tobytes(), before)
+                self.board.btn_rotate.click()
+                expected = unrotated.rotate(
+                    -angle, resample=Image.Resampling.BICUBIC, expand=True,
+                    fillcolor=(0, 0, 0, 0),
+                )
+                for result in (self.board.preview_current_pil, self.board.render_final_image()):
+                    self.assertEqual(result.size, expected.size)
+                    self.assertEqual(result.tobytes(), expected.tobytes())
+                self.assertEqual(self.board.sliders["Brightness"].value(), 20)
+                self.assertEqual(self.board.spin_width.value(), 4)
+                self.assertTrue(self.board.has_unsaved_changes())
+
+    def test_large_rotation_stays_preview_sized_and_saves_full_size_after_resize(self):
+        source = Image.new("RGB", (2400, 1800), "red")
+        source.save(self.second_path)
+        self.board.load_image(self.second_path)
+        self.board.rotation_input.setValue(45)
+        self.board.apply_rotation()
+        self.assertLessEqual(max(self.board.preview_current_pil.size), 1200)
+        final = self.board.render_final_image()
+        self.assertGreater(final.width, 2400)
+        self.assertEqual(final.getpixel((0, 0)), (0, 0, 0))
+        self.board.rotation_input.setValue(90)
+        self.board.apply_rotation()
+        self.board.spin_width.setValue(1200)
+        self.assertEqual(self.board.render_final_image().size, (900, 1200))
+
+    def test_signed_angle_typing_does_not_trigger_zoom_and_enter_applies_only_rotation(self):
+        self.board.show()
+        self.board.activateWindow()
+        self.board.rotation_input.setFocus()
+        self.app.processEvents()
+        self.board.actual_size()
+        for text, expected in (("-12.5", 347.5), ("+12.5", 12.5), ("0", 0)):
+            self.board.rotation_input.selectAll()
+            with patch.object(self.board, "apply_and_save") as save:
+                QTest.keyClicks(self.board.rotation_input, text.replace(".", self.board.rotation_input.locale().decimalPoint()))
+                QTest.keyClick(self.board.rotation_input, Qt.Key.Key_Return)
+                save.assert_not_called()
+            self.assertEqual(self.board.rotation_degrees, expected)
+            self.assertEqual(self.board.view.transform().m11(), 1)
+
     def test_channel_adjustments_preserve_alpha(self):
         self.board.sliders["Red"].setValue(100)
         source = Image.new("RGBA", (1, 1), (40, 60, 80, 90))

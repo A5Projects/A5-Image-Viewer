@@ -88,7 +88,7 @@ class CropTransformTests(unittest.TestCase):
             set(self.board.tool_buttons),
             {
                 "previous", "next", "crop", "undo", "reset",
-                "rotate_left", "rotate", "flip_h", "flip_v",
+                "rotate_left", "rotate", "rotate_angle", "flip_h", "flip_v",
             },
         )
         for button in self.board.tool_buttons.values():
@@ -97,7 +97,7 @@ class CropTransformTests(unittest.TestCase):
             list(self.board.tool_buttons),
             [
                 "previous", "next", "crop", "undo", "rotate_left",
-                "rotate", "flip_h", "flip_v", "reset",
+                "rotate", "rotate_angle", "flip_h", "flip_v", "reset",
             ],
         )
 
@@ -119,6 +119,56 @@ class CropTransformTests(unittest.TestCase):
         QTest.mousePress(symbol_button, Qt.MouseButton.LeftButton)
         self.assertTrue(symbol_button.property("cropPressFeedback"))
         QTest.mouseRelease(symbol_button, Qt.MouseButton.LeftButton)
+
+    def test_arbitrary_rotation_crops_new_pixels_and_undo_restores_selection(self):
+        self.board.select_all()
+        original_rect = QRectF(1, 1, 3, 2)
+        self.board.view.selection_rect_item.setRect(original_rect)
+        original_image = self.board.current_pixmap.toImage()
+        self.board.rotate_by_angle(30.5)
+        rotated = self.board.current_pixmap.toImage()
+        self.assertGreater(rotated.width(), original_image.width())
+        self.assertGreater(rotated.height(), original_image.height())
+        self.assertEqual(rotated.pixelColor(0, 0).name(), "#000000")
+        self.assertEqual(rotated.pixelColor(0, 0).alpha(), 255)
+        self.assertIsNone(self.board.view.selection_rect_item)
+        self.assertTrue(self.board.has_unsaved_changes())
+        self.board.select_all()
+        crop_rect = QRectF(2, 2, 3, 2)
+        self.board.view.selection_rect_item.setRect(crop_rect)
+        self.board.perform_crop_in_memory()
+        self.assertEqual(self.board.current_pixmap.toImage(), rotated.copy(crop_rect.toRect()))
+        self.board.undo()
+        self.assertEqual(self.board.current_pixmap.toImage(), rotated)
+        self.assertEqual(self.board.view.selection_rect_item.rect(), crop_rect)
+        self.board.undo()
+        self.assertEqual(self.board.current_pixmap.toImage(), original_image)
+        self.assertEqual(self.board.view.selection_rect_item.rect(), original_rect)
+        self.assertFalse(self.board.has_unsaved_changes())
+
+    def test_angle_popup_cancel_noop_negative_and_save(self):
+        with patch("ui.crop_board.QInputDialog.getDouble", return_value=(25.0, False)):
+            self.board.tool_buttons["rotate_angle"].click()
+        self.board.rotate_by_angle(360)
+        self.assertFalse(self.board.history)
+        with patch("ui.crop_board.QInputDialog.getDouble", return_value=(-27.25, True)):
+            self.board.tool_buttons["rotate_angle"].click()
+        rotated = self.board.current_pixmap.toImage()
+        self.assertTrue(self.board.save_current_file())
+        with Image.open(self.image_path) as saved:
+            self.assertEqual(saved.size, (rotated.width(), rotated.height()))
+        self.assertFalse(self.board.has_unsaved_changes())
+
+    def test_rotation_keeps_alpha_and_reset_restores_original(self):
+        alpha_path = os.path.join(self.temp_dir.name, "alpha.png")
+        Image.new("RGBA", (6, 4), (255, 0, 0, 100)).save(alpha_path)
+        self.board.load_image(alpha_path)
+        original = self.board.current_pixmap.toImage()
+        self.board.rotate_by_angle(-45)
+        self.assertEqual(self.board.current_pixmap.toImage().pixelColor(0, 0).alpha(), 0)
+        self.board.reset()
+        self.assertEqual(self.board.current_pixmap.toImage(), original)
+        self.assertFalse(self.board.history)
 
     def test_navigation_prompt_has_mnemonics_and_plain_d_remembers_discard(self):
         self.board.rotate_right()

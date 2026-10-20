@@ -64,6 +64,7 @@ class AdjustBoard(QDialog):
         }
         self.saved_any = False
         self.zoom_mode = "fit"
+        self.rotation_degrees = 0.0
         self.last_resize_axis = "width"
         self.remember_adjustments, self.remembered_values = get_adjustment_settings()
         self.auto_name_copies = get_adjust_auto_name_copies()
@@ -211,6 +212,24 @@ class AdjustBoard(QDialog):
         toggle_layout.addWidget(self.padding_color_button)
         self.update_padding_color_button()
         self.set_padding_controls_visible(False)
+
+        self.rotation_input = QDoubleSpinBox()
+        self.rotation_input.setRange(-360.0, 360.0)
+        self.rotation_input.setDecimals(2)
+        self.rotation_input.setSuffix("°")
+        self.rotation_input.setToolTip(
+            "Set rotation from the original orientation: + clockwise, − counter-clockwise.\n"
+            "Click Rotate or press Enter to apply. 0° removes rotation without resetting other adjustments.\n"
+            "Applied after resizing; canvas expands to keep the whole image."
+        )
+        self.rotation_input.installEventFilter(self)
+        self.rotation_input.lineEdit().installEventFilter(self)
+        self.btn_rotate = QPushButton("Rotate")
+        self.btn_rotate.setAutoDefault(False)
+        self.btn_rotate.clicked.connect(self.apply_rotation)
+        self.rotation_input.lineEdit().returnPressed.connect(self.apply_rotation)
+        toggle_layout.addWidget(self.rotation_input)
+        toggle_layout.addWidget(self.btn_rotate)
 
         self.check_remember = QCheckBox("Remember settings")
         self.check_remember.setChecked(self.remember_adjustments)
@@ -468,7 +487,7 @@ class AdjustBoard(QDialog):
                 self.padding_color.name()
                 if self.geometry_combo.currentData() == "pad" else None,
             )
-        return adjustments, toggles, resize_state
+        return adjustments, toggles, resize_state, self.rotation_degrees
 
     def neutral_edit_signature(self):
         defaults = self.neutral_adjustment_values()
@@ -478,7 +497,7 @@ class AdjustBoard(QDialog):
             for name, *_ in column
         )
         toggles = tuple((name, False) for name in self.TOGGLE_NAMES)
-        return adjustments, toggles, None
+        return adjustments, toggles, None, 0.0
 
     def has_unsaved_changes(self):
         return self.edit_signature() != self.saved_signature
@@ -778,6 +797,8 @@ class AdjustBoard(QDialog):
         return max(1, round(width * scale)), max(1, round(height * scale))
 
     def reset_adjustments(self):
+        self.rotation_degrees = 0.0
+        self.rotation_input.setValue(0.0)
         defaults = {
             spec[0]: spec[3]
             for column in self.CONTROL_COLUMNS
@@ -894,8 +915,24 @@ class AdjustBoard(QDialog):
         if self.target_dimensions() != self.original_pil.size:
             preview_size = self.preview_output_dimensions()
             preview = self.render_resized_image(preview, preview_size)
+        preview = self.rotated_image(preview)
+        preview.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
         self.preview_current_pil = preview
         self.update_preview()
+
+    def apply_rotation(self):
+        self.rotation_input.interpretText()
+        self.rotation_degrees = self.rotation_input.value() % 360
+        self.preview_timer.stop()
+        self.apply_preview_adjustments()
+
+    def rotated_image(self, image):
+        if not self.rotation_degrees:
+            return image
+        return image.rotate(
+            -self.rotation_degrees, resample=Image.Resampling.BICUBIC, expand=True,
+            fillcolor=(0, 0, 0, 0) if image.mode == "RGBA" else (0, 0, 0),
+        )
 
     def update_preview(self):
         self.set_pil_to_pixmap(self.preview_current_pil)
@@ -1007,7 +1044,7 @@ class AdjustBoard(QDialog):
         final_img = self.apply_adjustments(self.original_pil.copy())
         if target_size != self.original_pil.size:
             final_img = self.render_resized_image(final_img, target_size)
-        return final_img
+        return self.rotated_image(final_img)
 
     def save_result_to_path(self, output_path):
         if not output_path:
@@ -1127,6 +1164,8 @@ class AdjustBoard(QDialog):
 
         self.preview_timer.stop()
         self.image_path = image_path
+        self.rotation_degrees = 0.0
+        self.rotation_input.setValue(0.0)
         self.original_pil = new_original
         self.build_preview_source()
         self.set_adjustment_values(adjustment_state)
@@ -1148,6 +1187,11 @@ class AdjustBoard(QDialog):
         return self.load_image(next_path)
 
     def eventFilter(self, obj, event):
+        rotation_input = getattr(self, "rotation_input", None)
+        if rotation_input is not None and obj in (rotation_input, rotation_input.lineEdit()):
+            if event.type() == QEvent.Type.ShortcutOverride and event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Minus):
+                event.accept()
+                return True
         if obj == self.view.viewport() and event.type() == QEvent.Type.Wheel:
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 delta = event.angleDelta().y()

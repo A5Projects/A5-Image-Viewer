@@ -4,7 +4,7 @@ from collections import deque, OrderedDict
 from threading import Condition
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox, 
                              QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsItem,
-                             QCheckBox, QFileDialog, QMessageBox, QMenu, QToolButton)
+                             QCheckBox, QFileDialog, QMessageBox, QMenu, QToolButton, QInputDialog)
 from PyQt6.QtCore import (Qt, QRectF, QPointF, pyqtSignal, QEvent, QObject,
                           QThread, QSize, QTimer)
 from PyQt6.QtGui import (QPixmap, QColor, QPen, QShortcut, QKeySequence, QAction,
@@ -520,6 +520,9 @@ class CropBoard(QDialog):
         self.tool_buttons = {}
         self.aspect_ratio_combo = QComboBox()
         self.aspect_ratio_combo.addItems(["Free", "1:1", "4:3", "16:9", "21:9"])
+        self.aspect_ratio_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        # Leave room for the popup delegate's text margins as well as the arrow.
+        self.aspect_ratio_combo.setMinimumWidth(self.aspect_ratio_combo.sizeHint().width() + 12)
         self.aspect_ratio_combo.currentIndexChanged.connect(self.on_aspect_ratio_changed)
         toolbar.addWidget(self.aspect_ratio_combo)
 
@@ -535,6 +538,7 @@ class CropBoard(QDialog):
         self.add_symbol_button(toolbar, "undo", "Undo (Ctrl+Z)", self.undo)
         self.add_symbol_button(toolbar, "rotate_left", "Rotate 90 degrees left (L)", self.rotate_left)
         self.add_symbol_button(toolbar, "rotate", "Rotate 90 degrees right (R)", self.rotate_right)
+        self.add_symbol_button(toolbar, "rotate_angle", "Rotate by angle… (+ clockwise / − counter-clockwise)", self.prompt_rotation)
         self.add_symbol_button(toolbar, "flip_h", "Flip horizontal (H)", self.flip_horizontal)
         self.add_symbol_button(toolbar, "flip_v", "Flip vertical (V)", self.flip_vertical)
         toolbar.addSpacing(6)
@@ -723,7 +727,7 @@ class CropBoard(QDialog):
             painter.drawLine(10, 22, 27, 22)
             painter.drawLine(5, 10, 22, 10)
             painter.drawLine(22, 10, 22, 27)
-        elif icon_name in ("rotate", "rotate_left"):
+        elif icon_name in ("rotate", "rotate_left", "rotate_angle"):
             if icon_name == "rotate_left":
                 painter.save()
                 painter.translate(32, 0)
@@ -737,6 +741,13 @@ class CropBoard(QDialog):
             ]))
             if icon_name == "rotate_left":
                 painter.restore()
+            if icon_name == "rotate_angle":
+                painter.setPen(QColor(255, 218, 70))
+                font = painter.font()
+                font.setPixelSize(15)
+                font.setBold(True)
+                painter.setFont(font)
+                painter.drawText(QRectF(8, 9, 17, 17), Qt.AlignmentFlag.AlignCenter, "°")
         elif icon_name in ("flip_h", "flip_v"):
             painter.setPen(QPen(QColor(195, 235, 150), 3))
             if icon_name == "flip_h":
@@ -1025,6 +1036,7 @@ class CropBoard(QDialog):
         rotate_right_action = QAction("Rotate 90 degrees right\tR", self)
         rotate_right_action.triggered.connect(self.rotate_right)
         menu.addAction(rotate_right_action)
+        menu.addAction("Rotate by angle…").triggered.connect(self.prompt_rotation)
         flip_h_action = QAction("Flip horizontal\tH", self)
         flip_h_action.triggered.connect(self.flip_horizontal)
         menu.addAction(flip_h_action)
@@ -1067,7 +1079,9 @@ class CropBoard(QDialog):
             self.update_current_pixmap(clear_selection=True)
 
     def push_history(self):
-        self.history.append(self.current_pixmap)
+        selection = self.view.selection_rect_item
+        rect = QRectF(selection.rect()) if selection is not None else None
+        self.history.append((self.current_pixmap, rect))
         if len(self.history) > 5:
             self.history.pop(0)
 
@@ -1085,6 +1099,7 @@ class CropBoard(QDialog):
         self.view.selection_rect_item = selection
 
     def clear_crop_selection(self):
+        self.view.start_pos = None
         if self.view.selection_rect_item:
             self.scene.removeItem(self.view.selection_rect_item)
             self.view.selection_rect_item = None
@@ -1099,12 +1114,36 @@ class CropBoard(QDialog):
     def apply_geometric_transform(self, transform):
         if self.current_pixmap.isNull():
             return
-        self.push_history()
-        self.current_pixmap = self.current_pixmap.transformed(
+        transformed = self.current_pixmap.transformed(
             transform,
             Qt.TransformationMode.SmoothTransformation,
         )
+        if transformed.isNull():
+            QMessageBox.warning(self, "Rotate / Transform", "Could not create the transformed image.")
+            return
+        # Opaque sources keep opaque black corners; alpha sources retain transparency.
+        if not self.current_pixmap.hasAlphaChannel() and transformed.hasAlphaChannel():
+            opaque = QPixmap(transformed.size())
+            opaque.fill(Qt.GlobalColor.black)
+            painter = QPainter(opaque)
+            painter.drawPixmap(0, 0, transformed)
+            painter.end()
+            transformed = opaque
+        self.push_history()
+        self.current_pixmap = transformed
         self.update_current_pixmap(clear_selection=True)
+
+    def prompt_rotation(self):
+        degrees, accepted = QInputDialog.getDouble(
+            self, "Rotate by angle", "Degrees (+ clockwise / − counter-clockwise):",
+            0.0, -360.0, 360.0, 2,
+        )
+        if accepted:
+            self.rotate_by_angle(degrees)
+
+    def rotate_by_angle(self, degrees):
+        if degrees % 360:
+            self.apply_geometric_transform(QTransform().rotate(degrees))
 
     def rotate_left(self):
         self.apply_geometric_transform(QTransform().rotate(-90))
@@ -1120,8 +1159,12 @@ class CropBoard(QDialog):
 
     def undo(self):
         if self.history:
-            self.current_pixmap = self.history.pop()
+            self.current_pixmap, rect = self.history.pop()
             self.update_current_pixmap(clear_selection=True)
+            if rect is not None:
+                self.select_all()
+                self.view.selection_rect_item.setRect(rect)
+                self.view.selection_rect_item.update_handles_pos()
 
     def reset(self):
         self.history.clear()

@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased — 2026-10-09
+## 2026-10-20 — v1.0.0-20261020
+
+- Added signed-angle rotation to Image Adjust's bottom row and Crop Board's
+  toolbar/context menu. Normal save controls apply; Reset restores orientation,
+  and Crop Undo also restores the previous crop box.
+- Image Adjust's rotation uses an absolute angle from the original orientation.
+  Rotate or Enter applies it; applying 0° keeps all other adjustments intact.
+- Left double-click closes fullscreen/windowed viewing like Enter, selecting the
+  displayed image in the browser and honoring save/discard/cancel.
+- About now offers a manual Check for updates button with an inline result.
+  It contacts GitHub only on a click, never automatically, and installs nothing.
+- Widened Crop Board's aspect-ratio dropdown so every option remains readable.
 
 - Single-file rename now suspends new thumbnail reads and retries temporary
   Windows sharing violations in a worker thread. The dialog stays responsive,

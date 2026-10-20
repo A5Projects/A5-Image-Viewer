@@ -17,6 +17,7 @@ from utils.file_ops import (
 
 class FullscreenImageViewer(ImageViewer):
     context_menu_requested = pyqtSignal(object)
+    close_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -146,6 +147,14 @@ class FullscreenImageViewer(ImageViewer):
 
         super().mouseMoveEvent(event)
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selection_start = None
+            event.accept()
+            self.close_requested.emit()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.RightButton and self.right_press_pos is not None:
             global_pos = self.viewport().mapToGlobal(event.position().toPoint())
@@ -234,6 +243,7 @@ class FullScreenViewer(QDialog):
         self.viewer.installEventFilter(self)
         self.viewer.viewport().installEventFilter(self)
         self.viewer.context_menu_requested.connect(self.show_context_menu)
+        self.viewer.close_requested.connect(self.close)
         install_about_shortcut(self, "Image viewer (fullscreen / windowed)")
         self.layout.addWidget(self.viewer)
 

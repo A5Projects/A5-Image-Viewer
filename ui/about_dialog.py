@@ -4,13 +4,14 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QTabWidget,
-    QTextBrowser, QVBoxLayout, QWidget,
+    QTextBrowser, QVBoxLayout, QWidget, QPushButton,
 )
 
 from utils.app_info import (
     APP_NAME, APP_VERSION, RELEASE_DATE, GITHUB_URL, bundled_file, read_bundled_text,
 )
 from utils.file_ops import get_disable_f1_shortcut, set_disable_f1_shortcut
+from utils.update_check import ReleaseChecker
 
 
 SHORTCUTS = {
@@ -37,7 +38,7 @@ SHORTCUTS = {
     "Image viewer (fullscreen / windowed)": [
         ("F1 / F11", "About / switch fullscreen and windowed modes"),
         ("Escape", "Close and return to the image where viewing started"),
-        ("Enter", "Close and select the displayed image in the browser"),
+        ("Enter / double-click", "Close and select the displayed image in the browser"),
         ("Backspace", "Show the displayed image in the browser without closing"),
         ("Space / PgDown / N / wheel down", "Next image"),
         ("PgUp / P / wheel up", "Previous image"),
@@ -71,6 +72,7 @@ SHORTCUTS = {
         ("Ctrl+Z / Ctrl+R", "Undo / reset"),
         ("L / R / H / V", "Rotate left / right; flip horizontally / vertically"),
         ("Escape", "Close Crop Board"),
+        ("Rotate by angle… (toolbar / menu)", "Signed degrees; + clockwise. Undo restores image and crop selection"),
     ],
     "Adjust Colors & Size": [
         ("F1", "About and shortcuts"),
@@ -81,6 +83,7 @@ SHORTCUTS = {
         ("O", "Save / overwrite adjusted image"),
         ("F", "Save adjusted image to a file"),
         ("R", "Reset adjustments"),
+        ("Rotate / Enter in degree field", "Set absolute rotation from 0°; + clockwise. Apply 0° to remove only rotation"),
         ("Escape", "Close Adjust"),
     ],
     "Settings and dialogs": [
@@ -105,12 +108,29 @@ class AboutDialog(QDialog):
         icon.setPixmap(self.windowIcon().pixmap(48, 48))
         heading.addWidget(icon)
         details = QLabel(
-            f"<b>{APP_NAME} {APP_VERSION}</b><br>Update: {RELEASE_DATE}<br>"
+            f"<b>{APP_NAME} {APP_VERSION}</b><br>Update: {RELEASE_DATE}"
+        )
+        links = QLabel(
             f'<a href="{GITHUB_URL}">GitHub project</a> · '
             f'<a href="{GITHUB_URL}/releases">Releases</a> · GNU GPL version 3'
         )
-        details.setOpenExternalLinks(True)
-        heading.addWidget(details, 1)
+        links.setOpenExternalLinks(True)
+        details_column = QVBoxLayout()
+        details_column.addWidget(details)
+        self.update_status = QLabel()
+        self.update_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.update_status.setWordWrap(True)
+        self.update_status.hide()
+        details_column.addWidget(self.update_status)
+        details_column.addWidget(links)
+        heading.addLayout(details_column, 1)
+        self.update_button = QPushButton("Check for updates")
+        self.update_button.setAutoDefault(False)
+        self.update_button.setToolTip("Contact GitHub only when pressed. Does not download or install updates.")
+        self.update_button.clicked.connect(self.check_for_updates)
+        heading.addWidget(self.update_button, 0, Qt.AlignmentFlag.AlignTop)
+        self.release_checker = ReleaseChecker(self)
+        self.release_checker.finished.connect(self.show_update_result)
         layout.addLayout(heading)
         self.tabs = QTabWidget()
         shortcut_page = QWidget()
@@ -147,6 +167,21 @@ class AboutDialog(QDialog):
         buttons.rejected.connect(self.reject)
         footer.addWidget(buttons)
         layout.addLayout(footer)
+
+    def check_for_updates(self):
+        self.update_status.show()
+        self.update_status.setText("Checking for updates…")
+        self.update_button.setEnabled(False)
+        self.release_checker.check()
+
+    def show_update_result(self, message):
+        self.update_status.show()
+        self.update_status.setText(message)
+        self.update_button.setEnabled(True)
+
+    def done(self, result):
+        self.release_checker.cancel()
+        super().done(result)
 
     def change_f1_preference(self, disabled):
         set_disable_f1_shortcut(disabled)

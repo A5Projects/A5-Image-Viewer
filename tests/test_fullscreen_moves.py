@@ -7,6 +7,8 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
+from PyQt6.QtCore import Qt
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
@@ -84,6 +86,30 @@ class FullscreenMoveTests(unittest.TestCase):
         self.move([self.paths[1]], perform=False)
         self.assertTrue(os.path.exists(self.paths[1]))
         self.assertEqual(self.window.fullscreen_viewer.current_image_path, self.paths[1])
+
+    def test_double_click_closes_on_current_image_in_both_modes_and_honors_cancel(self):
+        viewer = self.window.fullscreen_viewer
+        for mode in ("fullscreen", "windowed"):
+            with self.subTest(mode=mode):
+                if viewer.display_mode != mode:
+                    viewer.toggle_display_mode()
+                self.window.select_image_by_path(self.paths[1])
+                self.window.fullscreen_start_path = self.paths[1]
+                viewer.load_image(self.paths[2])
+                self.app.processEvents()
+                viewport = viewer.viewer.viewport()
+                point = viewport.rect().center()
+                with patch.object(self.window, "prompt_save_changes", return_value=False) as prompt:
+                    QTest.mouseDClick(viewport, Qt.MouseButton.LeftButton, pos=point)
+                    prompt.assert_called_once()
+                self.assertTrue(viewer.isVisible())
+                self.assertIsNone(viewer.viewer.selection_start)
+                with patch.object(self.window, "prompt_save_changes", return_value=True) as prompt:
+                    QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=point)
+                    QTest.mouseDClick(viewport, Qt.MouseButton.LeftButton, pos=point)
+                    prompt.assert_called_once()
+                self.assertFalse(viewer.isVisible())
+                self.assertEqual(self.window.thumbnail_view.currentIndex().data(PATH_ROLE), self.paths[2])
 
     def test_windowed_move_preserves_display_mode(self):
         self.window.fullscreen_viewer.toggle_display_mode()
