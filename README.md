@@ -234,6 +234,13 @@ The thumbnail history uses up to a quarter of the thumbnail RAM budget in
 it fills. The history disappears when you close A5 and creates no database on
 disk. Changing the thumbnail size starts a fresh history.
 
+Turn on **Settings → Thumbnails → Animate GIFs** to play GIFs in the grid and
+the bottom-left preview. Check **Only in preview** to play just the selected
+GIF. Playback is off by default. Up to 32 visible GIF thumbnails can play at
+once within a shared 128 MiB animation budget. Larger GIFs can still play in
+the preview, which has its own budget of up to 256 MiB. GIFs that exceed the
+available animation budget show a still image.
+
 **Smooth downscaling** in Settings is enabled by default for the preview and
 fullscreen/windowed image viewer. It uses CPU rendering below 100% zoom;
 100% and larger remain unsmoothed. It can be disabled, and does not enable GPU

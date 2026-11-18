@@ -1,8 +1,10 @@
 """Full-resolution decoding policy, separate from background cache budgets."""
 
 import math
+import os
 
 from PIL import Image
+from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QImageReader
 
 from utils.file_ops import get_image_settings
@@ -36,12 +38,28 @@ def check_image_size(width, height, limit_mb):
         )
 
 
+def _first_frame_size(reader, path):
+    # Qt scans all GIF frames for reader.size(). Its decoder renders onto the
+    # logical screen declared at the start of the file. Peek on the same device
+    # used for decoding so a replacement file cannot invalidate the size check.
+    if os.path.splitext(path)[1].lower() == ".gif" and reader.format() == b"gif":
+        header = bytes(reader.device().peek(10))
+        if len(header) < 10:
+            raise ImageLoadError("Unable to open image: incomplete GIF header.")
+        width = int.from_bytes(header[6:8], "little")
+        height = int.from_bytes(header[8:10], "little")
+        if not width or not height:
+            raise ImageLoadError("Unable to open image: GIF has no logical screen dimensions.")
+        return QSize(width, height)
+    return reader.size()
+
+
 def read_full_image(path):
     limit = apply_image_loading_settings()
-    reader = QImageReader(path)
+    reader = QImageReader(os.fspath(path))
     reader.setAutoTransform(False)
     try:
-        size = reader.size()
+        size = _first_frame_size(reader, path)
         if size.isValid():
             check_image_size(size.width(), size.height(), limit)
             effective_limit = QImageReader.allocationLimit()

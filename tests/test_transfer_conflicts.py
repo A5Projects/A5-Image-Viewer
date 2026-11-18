@@ -74,10 +74,15 @@ class TransferConflictTests(unittest.TestCase):
         )
 
     def test_scan_builds_conflicts_without_enumerating_destination(self):
-        with patch(
-            "ui.transfer_conflicts.os.scandir",
-            side_effect=AssertionError("destination enumeration is not allowed"),
-        ):
+        scandir = os.scandir
+        destination = os.path.normcase(os.path.abspath(self.destination))
+
+        def scan_other_folders(path="."):
+            if not isinstance(path, int) and os.path.normcase(os.path.abspath(path)) == destination:
+                self.fail("destination enumeration is not allowed")
+            return scandir(path)
+
+        with patch("os.scandir", new=scan_other_folders):
             plan = self.conflict_plan(["one.jpg", "two.jpg"])
 
         self.assertFalse(plan.error_code)

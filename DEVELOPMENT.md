@@ -461,6 +461,13 @@ crop, save, and metadata behavior together.
 `ImageViewer` is a `QGraphicsView` containing one `QGraphicsPixmapItem`. Setting
 a pixmap updates the scene and fits it. Ctrl+wheel zooms; arrow keys pan.
 
+`GifPreviewViewer` adds optional playback to the bottom-left preview. The grid
+and preview each use a `GifPlayback` worker that starts on demand. The grid
+requests only GIFs painted inside the viewport. Animated frames are displayed
+separately from the normal still-thumbnail history. Each decoder reads a
+bounded snapshot and releases the original file so Windows file operations can
+proceed during playback.
+
 `FullScreenViewer` is a shared image-view dialog owned by `MainWindow`, supporting
 frameless fullscreen and a bordered, resizable window:
 

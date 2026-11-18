@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout, QSpinBox, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_ops import (RESOURCE_PROFILES, get_thumbnail_size, set_thumbnail_size,
+                            get_gif_playback_settings, set_gif_playback_settings,
                             get_startup_behavior, set_startup_behavior,
                             get_resource_settings, set_resource_settings,
                             get_ui_theme, set_ui_theme,
@@ -14,6 +15,7 @@ from ui.about_dialog import install_about_shortcut, show_about
 
 class SettingsDialog(QDialog):
     thumbnail_size_changed = pyqtSignal(int)
+    gif_playback_changed = pyqtSignal(bool, bool)
     resource_settings_changed = pyqtSignal(object)
     theme_changed = pyqtSignal(str)
     image_settings_changed = pyqtSignal(object)
@@ -85,6 +87,20 @@ class SettingsDialog(QDialog):
         slider_layout.addWidget(self.val_label)
         
         thumb_layout.addLayout(slider_layout)
+        animate_gifs, only_in_preview = get_gif_playback_settings()
+        self.animate_gifs_check = QCheckBox("Animate GIFs")
+        self.animate_gifs_check.setToolTip("Play animated GIFs in visible thumbnails and the selected image preview.")
+        self.animate_gifs_check.setChecked(animate_gifs)
+        self.gif_preview_only_check = QCheckBox("Only in preview")
+        self.gif_preview_only_check.setToolTip("Play the selected GIF in the preview pane and keep thumbnails still.")
+        self.gif_preview_only_check.setChecked(only_in_preview)
+        self.gif_preview_only_check.setEnabled(animate_gifs)
+        self.animate_gifs_check.toggled.connect(self.gif_preview_only_check.setEnabled)
+        gif_layout = QHBoxLayout()
+        gif_layout.addWidget(self.animate_gifs_check)
+        gif_layout.addWidget(self.gif_preview_only_check)
+        gif_layout.addStretch()
+        thumb_layout.addLayout(gif_layout)
         layout.addWidget(thumb_group)
 
         resource_group = QGroupBox("Resource Usage")
@@ -197,6 +213,10 @@ class SettingsDialog(QDialog):
         new_theme = self.theme_combo.currentData()
         old_size = get_thumbnail_size()
         new_size = self.thumb_slider.value()
+        gif_settings = self.animate_gifs_check.isChecked(), self.gif_preview_only_check.isChecked()
+        if gif_settings != get_gif_playback_settings():
+            set_gif_playback_settings(*gif_settings)
+            self.gif_playback_changed.emit(*gif_settings)
         set_thumbnail_size(new_size)
         set_startup_behavior(self.startup_combo.currentData())
         set_ui_theme(new_theme)

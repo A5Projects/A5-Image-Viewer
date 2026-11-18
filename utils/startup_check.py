@@ -15,6 +15,7 @@ def _check_startup(folder):
     from utils import file_ops
     from utils.app_info import bundled_file
     from ui.about_dialog import AboutDialog
+    from ui.gif_playback import GifPlayback
     from ui.main_window import MainWindow
     from ui.theme import apply_theme
 
@@ -48,8 +49,30 @@ def _check_startup(folder):
             if image.isNull() or image.width() != 32 or image.height() != 24:
                 raise RuntimeError(f"{extension} decoding failed: {reader.errorString()}")
             del reader
-        QTimer.singleShot(100, app.quit)
-        app.exec()
+        gif_path = str(folder / "animated.gif")
+        Image.new("RGB", (8, 8), "red").save(
+            gif_path, save_all=True, append_images=[Image.new("RGB", (8, 8), "lime")],
+            duration=80, loop=0,
+        )
+        saw_second_frame = False
+
+        def check_frame(frames):
+            nonlocal saw_second_frame
+            image = frames.get(gif_path)
+            if image is not None and image.pixelColor(0, 0).name() == "#00ff00":
+                saw_second_frame = True
+                app.quit()
+
+        player = GifPlayback(window, max_players=1, byte_limit=4 * 1024 * 1024)
+        try:
+            player.frames_changed.connect(check_frame)
+            player.set_sources([gif_path])
+            QTimer.singleShot(5000, app.quit)
+            app.exec()
+        finally:
+            player.shutdown()
+        if not saw_second_frame:
+            raise RuntimeError("The GIF player did not display the second animation frame.")
         return {"qt_version": qVersion(), "platform": app.platformName()}
     finally:
         if window is not None:

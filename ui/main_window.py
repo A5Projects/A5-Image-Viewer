@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObj
 from ui.thumbnail_view import (ThumbnailView, PATH_ROLE, KIND_ROLE, EXT_ROLE, SIZE_ROLE,
                                MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, FINGERPRINT_ROLE,
                                thumbnail_fingerprint, thumbnail_item_label)
-from ui.image_viewer import ImageViewer
+from ui.gif_preview import GifPreviewViewer
 from ui.dialogs import CopyMoveDialog, RenameDialog
 from ui.folder_shortcuts import FolderShortcutList, ShrinkableButtonStrip
 from ui.theme import apply_theme
@@ -29,7 +29,7 @@ from utils.file_ops import (copy_files as copy_files_batch, move_files as move_f
                             get_favorite_display_name, set_favorite_display_name,
                             get_favorite_sort_setting, set_favorite_sort_setting,
                             set_last_folder, get_last_folder, get_startup_behavior, get_thumbnail_size,
-                            get_resource_settings, get_ui_theme)
+                            get_resource_settings, get_ui_theme, get_gif_playback_settings)
 from utils import windows_shell
 from ui.about_dialog import install_about_shortcut
 from utils.application_launch import start_new_instance
@@ -296,6 +296,8 @@ class VideoFrameGrabber(QObject):
             return (file_path, 0, 0)
 
 class MainWindow(QMainWindow):
+    browser_closed = pyqtSignal()
+
     def __init__(self, startup_path=None):
         apply_image_loading_settings()
         super().__init__()
@@ -574,7 +576,7 @@ class MainWindow(QMainWindow):
         self.splitter_left.addWidget(tree_container)
         
         # Left Bottom: Preview
-        self.preview_viewer = ImageViewer()
+        self.preview_viewer = GifPreviewViewer()
         self.splitter_left.addWidget(self.preview_viewer)
         
         # Right Panel (Thumbnails)
@@ -586,6 +588,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_view = ThumbnailView()
         self.thumbnail_view.set_thumbnail_size(get_thumbnail_size())
         self.thumbnail_view.apply_resource_settings(self.resource_settings)
+        self.apply_gif_playback(*get_gif_playback_settings())
         self.thumbnail_view.selectionModel().currentChanged.connect(self.on_thumbnail_selected)
         self.thumbnail_view.doubleClicked.connect(self.open_thumbnail_fullscreen)
         self.thumbnail_view.files_dropped.connect(self.copy_dropped_files_to_current_folder)
@@ -637,6 +640,9 @@ class MainWindow(QMainWindow):
         self.viewer_prefetch_cache = OrderedDict()
         self.viewer_prefetch_cache_bytes = 0
         self.crop_prefetch_service.image_ready.connect(self.on_viewer_prefetch_ready)
+        self.browser_closed.connect(self.preview_viewer.shutdown_gif_playback)
+        self.browser_closed.connect(self.thumbnail_view.shutdown_gif_playback)
+        QApplication.instance().aboutToQuit.connect(self.preview_viewer.shutdown_gif_playback)
         QApplication.instance().aboutToQuit.connect(self.thumbnail_view.shutdown)
         QApplication.instance().aboutToQuit.connect(self.crop_prefetch_service.shutdown)
         QApplication.instance().aboutToQuit.connect(self.transfer_coordinator.shutdown)
@@ -2004,7 +2010,11 @@ class MainWindow(QMainWindow):
         self.thumbnail_view.selectionModel().select(
             self.thumbnail_view.currentIndex(), QItemSelectionModel.SelectionFlag.ClearAndSelect,
         )
-        self.preview_viewer.set_pixmap(self.fullscreen_viewer.viewer.pixmap_item.pixmap())
+        pixmap = self.fullscreen_viewer.viewer.pixmap_item.pixmap()
+        if self.image_modified:
+            self.preview_viewer.set_pixmap(pixmap)
+        else:
+            self.preview_viewer.set_source_pixmap(path, pixmap)
         self.thumbnail_view.scrollTo(
             self.thumbnail_view.currentIndex(), self.thumbnail_view.ScrollHint.PositionAtCenter,
         )
@@ -2432,6 +2442,7 @@ class MainWindow(QMainWindow):
                 selected_videos = True
                 break
         self.clear_viewer_prefetch()
+        self.preview_viewer.set_gif_playback_paused(True)
         self.thumbnail_view.set_background_activity_paused(True)
         if selected_videos:
             self.video_frame_grabber.shutdown()
@@ -2439,6 +2450,7 @@ class MainWindow(QMainWindow):
 
     def resume_file_access(self, video_decoder_stopped):
         self.thumbnail_view.set_background_activity_paused(False)
+        self.preview_viewer.set_gif_playback_paused(False)
         if video_decoder_stopped:
             self.restart_video_thumbnail_queue()
 
@@ -2473,7 +2485,7 @@ class MainWindow(QMainWindow):
     def load_prefetched_preview(self, file_path):
         image = self.take_viewer_prefetch(file_path)
         if image is not None:
-            self.preview_viewer.set_pixmap(QPixmap.fromImage(image))
+            self.preview_viewer.set_source_pixmap(file_path, QPixmap.fromImage(image))
         else:
             self.preview_viewer.load_image(file_path)
         self.schedule_viewer_prefetch(file_path)
@@ -3252,6 +3264,8 @@ class MainWindow(QMainWindow):
         selected_new_paths = [changed_mapping.get(path, path) for path in selected_old_paths]
         current_new_path = changed_mapping.get(current_old_path, current_old_path)
         self.current_image_path = current_new_path
+        if current_old_path in changed_mapping:
+            self.preview_viewer.rename_gif_source(current_old_path, current_new_path)
         if self.fullscreen_start_path in changed_mapping:
             self.fullscreen_start_path = changed_mapping[self.fullscreen_start_path]
         if self.fullscreen_viewer.current_image_path in changed_mapping:
@@ -3288,6 +3302,7 @@ class MainWindow(QMainWindow):
 
         self.current_image_path = new_path
         self.current_item_kind = kind
+        self.preview_viewer.rename_gif_source(old_path, new_path)
         if self.fullscreen_start_path == old_path:
             self.fullscreen_start_path = new_path
         if self.fullscreen_viewer.current_image_path == old_path:
@@ -3473,13 +3488,23 @@ class MainWindow(QMainWindow):
         # Map to global relative to thumbnail_view
         menu.exec(self.thumbnail_view.viewport().mapToGlobal(pos))
 
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        if event.isAccepted():
+            self.browser_closed.emit()
+
     def open_settings_dialog(self):
         dialog = SettingsDialog(self)
         dialog.thumbnail_size_changed.connect(self.thumbnail_view.set_thumbnail_size)
         dialog.resource_settings_changed.connect(self.apply_resource_settings)
         dialog.theme_changed.connect(apply_theme)
         dialog.image_settings_changed.connect(self.apply_image_settings)
+        dialog.gif_playback_changed.connect(self.apply_gif_playback)
         dialog.exec()
+
+    def apply_gif_playback(self, animate_gifs, only_in_preview):
+        self.preview_viewer.set_gif_playback(animate_gifs)
+        self.thumbnail_view.set_gif_playback(animate_gifs and not only_in_preview)
 
     def apply_image_settings(self, settings):
         self.clear_viewer_prefetch()

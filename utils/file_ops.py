@@ -281,6 +281,16 @@ def set_thumbnail_size(size: int):
 def get_thumbnail_size() -> int:
     return load_config().get("thumbnail_size", 200)
 
+def get_gif_playback_settings() -> tuple[bool, bool]:
+    config = load_config()
+    return config.get("animate_gifs") is True, config.get("gif_only_in_preview") is True
+
+def set_gif_playback_settings(animate_gifs: bool, only_in_preview: bool):
+    config = load_config()
+    config["animate_gifs"] = animate_gifs
+    config["gif_only_in_preview"] = only_in_preview
+    save_config(config)
+
 def get_ui_theme() -> str:
     theme = load_config().get("ui_theme", "dark")
     return theme if theme in ("dark", "medium_dark", "light") else "dark"

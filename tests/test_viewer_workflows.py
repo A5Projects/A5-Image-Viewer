@@ -6,7 +6,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PyQt6.QtCore import QItemSelectionModel, QPoint, Qt
+from PyQt6.QtCore import QElapsedTimer, QItemSelectionModel, QPoint, Qt, QTimer
 from PyQt6.QtGui import QImage
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -56,6 +56,51 @@ class ViewerWorkflowTests(unittest.TestCase):
         self.window.open_current_thumbnail_fullscreen()
         self.app.processEvents()
         return self.window.fullscreen_viewer
+
+    def test_gif_playback_settings_apply_to_current_selection_and_prefetched_images(self):
+        path = os.path.join(self.folder, "animated.GIF")
+        Image.new("RGB", (32, 16), "red").save(
+            path, save_all=True, append_images=[Image.new("RGB", (32, 16), "lime")],
+            loop=0, duration=80,
+        )
+        self.window.add_thumbnail_paths([path])
+        preview = self.window.preview_viewer
+        grid = self.window.thumbnail_view
+
+        def change_settings(enabled, preview_only):
+            def choose():
+                dialog = self.app.activeModalWidget()
+                dialog.animate_gifs_check.setChecked(enabled)
+                dialog.gif_preview_only_check.setChecked(preview_only)
+                dialog.accept()
+
+            QTimer.singleShot(0, choose)
+            self.window.open_settings_dialog()
+
+        def preview_color():
+            return preview.pixmap_item.pixmap().toImage().pixelColor(0, 0).name()
+
+        def wait_for_green():
+            timer = QElapsedTimer()
+            timer.start()
+            while timer.elapsed() < 2000 and preview_color() != "#00ff00":
+                QTest.qWait(10)
+            self.assertEqual(preview_color(), "#00ff00")
+
+        self.assertEqual(preview_color(), "#ff0000")
+        with patch.object(grid, "set_gif_playback", wraps=grid.set_gif_playback) as grid_setting:
+            change_settings(True, True)
+            grid_setting.assert_called_with(False)
+            wait_for_green()
+            change_settings(True, False)
+            grid_setting.assert_called_with(True)
+            self.window.select_image_by_path(self.paths[0])
+            with patch.object(self.window, "take_viewer_prefetch", return_value=QImage(path)):
+                self.window.select_image_by_path(path)
+            wait_for_green()
+            change_settings(False, False)
+            grid_setting.assert_called_with(False)
+        self.assertEqual(preview_color(), "#ff0000")
 
     def test_delete_key_includes_selected_folder(self):
         self.window.select_image_by_path(self.child)

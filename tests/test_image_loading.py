@@ -73,6 +73,35 @@ class ImageLoadingTests(unittest.TestCase):
         self.assertEqual(file_ops.get_image_settings()["max_decoded_image_mb"], 1024)
         self.assertTrue(file_ops.get_image_settings()["smooth_downscaling"])
 
+    def test_gif_settings_persist_and_retain_preview_choice_when_disabled(self):
+        self.assertEqual(file_ops.get_gif_playback_settings(), (False, False))
+        dialog = SettingsDialog()
+        self.assertFalse(dialog.gif_preview_only_check.isEnabled())
+        dialog.animate_gifs_check.click()
+        self.assertTrue(dialog.gif_preview_only_check.isEnabled())
+        dialog.gif_preview_only_check.click()
+        changes = []
+        dialog.gif_playback_changed.connect(lambda *settings: changes.append(settings))
+        dialog.accept()
+        self.assertEqual(changes, [(True, True)])
+        self.assertEqual(file_ops.get_gif_playback_settings(), (True, True))
+
+        reopened = SettingsDialog()
+        self.assertTrue(reopened.animate_gifs_check.isChecked())
+        self.assertTrue(reopened.gif_preview_only_check.isChecked())
+        reopened.animate_gifs_check.click()
+        self.assertFalse(reopened.gif_preview_only_check.isEnabled())
+        reopened.accept()
+        self.assertEqual(file_ops.get_gif_playback_settings(), (False, True))
+
+    def test_gif_setting_changes_can_be_cancelled(self):
+        file_ops.save_config({"animate_gifs": "true", "gif_only_in_preview": 1})
+        self.assertEqual(file_ops.get_gif_playback_settings(), (False, False))
+        dialog = SettingsDialog()
+        dialog.animate_gifs_check.click()
+        dialog.reject()
+        self.assertEqual(file_ops.get_gif_playback_settings(), (False, False))
+
     def test_size_limit_reports_required_memory_before_decoding(self):
         with patch.object(image_loading, "QImageReader") as factory:
             factory.return_value.size.return_value = QSize(22399, 7000)

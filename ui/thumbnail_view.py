@@ -3,10 +3,11 @@ from bisect import bisect_left
 from collections import deque, OrderedDict
 from threading import Condition
 from PyQt6.QtWidgets import QListView, QStyledItemDelegate, QStyle
-from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
+from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QImageReader, QImage, QPainter, QColor, QDrag, QPen, QFont, QBrush
 from ui.theme import theme_colors
 from ui.thumbnail_history import PackedThumbnail, ThumbnailHistory
+from ui.gif_playback import GifPlayback
 
 PATH_ROLE = Qt.ItemDataRole.UserRole
 KIND_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -80,7 +81,18 @@ def _read_folder_preview_image(file_path, cell_width, cell_height):
     return reader.read()
 
 class ThumbnailItemDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        view = self.parent()
+        if view._gif_icons:
+            icon = view._gif_icons.get(index.data(PATH_ROLE))
+            if icon is not None:
+                option.icon = icon
+
     def paint(self, painter, option, index):
+        view = self.parent()
+        if view.gif_playback_enabled and index.data(EXT_ROLE) == "gif":
+            view.note_painted_gif(index.data(PATH_ROLE))
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         active = bool(option.state & QStyle.StateFlag.State_Active)
         if selected:
@@ -426,6 +438,14 @@ class ThumbnailView(QListView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.gif_playback_enabled = False
+        self._painted_gifs = set()
+        self._gif_icons = {}
+        self._gif_sync_timer = QTimer(self)
+        self._gif_sync_timer.setSingleShot(True)
+        self._gif_sync_timer.timeout.connect(self._sync_visible_gifs)
+        self._gif_playback = GifPlayback(self, max_players=32, byte_limit=128 * 1024 * 1024)
+        self._gif_playback.frames_changed.connect(self._update_gif_frames)
         self.setObjectName("thumbnailView")
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setItemDelegate(ThumbnailItemDelegate(self))
@@ -477,6 +497,75 @@ class ThumbnailView(QListView):
         self.load_generation = 0
         self.visible_item_count = 0
         self.visible_rows = []
+
+    def set_gif_playback(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self.gif_playback_enabled:
+            return
+        self.gif_playback_enabled = enabled
+        self._reset_gifs()
+        self.viewport().update()
+
+    def _reset_gifs(self):
+        self._gif_sync_timer.stop()
+        self._painted_gifs.clear()
+        self._gif_icons.clear()
+        self._gif_playback.clear()
+
+    def note_painted_gif(self, path):
+        if (path and path not in self._painted_gifs
+                and not self.file_access_paused and not self.interactive_background_paused):
+            self._painted_gifs.add(path)
+            self._gif_sync_timer.start(0)
+
+    def _sync_visible_gifs(self):
+        # The delegate discovers GIFs as Qt paints them. Recheck only those few
+        # items after a scroll, filter or layout change, independent of folder size.
+        visible = []
+        viewport = self.viewport().rect()
+        for path in self._painted_gifs:
+            item = self.path_items.get(path)
+            if item is not None and not self.isRowHidden(item.row()):
+                rect = self.visualRect(item.index())
+                if viewport.intersects(rect):
+                    visible.append((rect.top(), rect.left(), path))
+        paths = [path for _, _, path in sorted(visible)]
+        self._painted_gifs = set(paths)
+        self._gif_icons = {path: icon for path, icon in self._gif_icons.items() if path in self._painted_gifs}
+        self._gif_playback.set_sources(paths, self.iconSize())
+
+    def _update_gif_frames(self, frames):
+        for path, image in frames.items():
+            item = self.path_items.get(path)
+            if item is None or self.isRowHidden(item.row()):
+                continue
+            rect = self.visualRect(item.index())
+            if not self.viewport().rect().intersects(rect):
+                continue
+            if image is None:
+                self._gif_icons.pop(path, None)
+            else:
+                canvas = QPixmap(self.iconSize())
+                canvas.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(canvas)
+                painter.drawImage((canvas.width() - image.width()) // 2,
+                                  (canvas.height() - image.height()) // 2, image)
+                painter.end()
+                self._gif_icons[path] = QIcon(canvas)
+            self.viewport().update(rect)
+
+    def hideEvent(self, event):
+        self._reset_gifs()
+        super().hideEvent(event)
+
+    def shutdown_gif_playback(self):
+        self.gif_playback_enabled = False
+        self._reset_gifs()
+        self._gif_playback.shutdown()
+
+    def closeEvent(self, event):
+        self.shutdown_gif_playback()
+        super().closeEvent(event)
         
     def set_thumbnail_size(self, size):
         size = max(100, min(256, int(size)))
@@ -507,6 +596,9 @@ class ThumbnailView(QListView):
     def set_background_activity_paused(self, paused):
         self.interactive_background_paused = bool(paused)
         self._update_background_pause()
+        if self.gif_playback_enabled:
+            self._reset_gifs()
+            self.viewport().update()
 
     def set_file_access_paused(self, paused):
         """Stop new reads without waiting on an in-progress decoder in the GUI."""
@@ -514,12 +606,16 @@ class ThumbnailView(QListView):
         if paused == self.file_access_paused:
             return
         self.file_access_paused = paused
+        if self.gif_playback_enabled:
+            self._reset_gifs()
+            self.viewport().update()
         if paused:
             self._stop_thumbnail_workers()
         else:
             self._start_thumbnail_workers()
 
     def shutdown(self):
+        self.shutdown_gif_playback()
         self.image_generation += 1
         if self.task_queue is not None:
             self.task_queue.stop()
@@ -548,6 +644,7 @@ class ThumbnailView(QListView):
                     show_images=True, show_videos=False, show_folders=True,
                     show_pdfs=True, show_text=False):
         self.load_generation += 1
+        self._reset_gifs()
         self._stop_thumbnail_workers()
 
         self.show_images = show_images
@@ -788,6 +885,8 @@ class ThumbnailView(QListView):
         self._request_folder_priority(rows)
 
     def prioritize_visible_thumbnails(self):
+        if self._painted_gifs:
+            self._gif_sync_timer.start(0)
         if self.thumbnail_model.rowCount() == 0:
             return
 
@@ -936,6 +1035,8 @@ class ThumbnailView(QListView):
         if item is None or item.data(KIND_ROLE) != "image":
             return
         file_path = item.data(PATH_ROLE)
+        self._gif_playback.invalidate(file_path)
+        self._gif_icons.pop(file_path, None)
         self._evict_path(file_path)
         row = item.row()
         if 0 <= row < len(self.files) and self.files[row][0] == file_path:
@@ -948,6 +1049,7 @@ class ThumbnailView(QListView):
 
     def invalidate_all_thumbnails(self):
         self.load_generation += 1
+        self._reset_gifs()
         self._stop_thumbnail_workers()
         for item in self.path_items.values():
             kind = item.data(KIND_ROLE)
