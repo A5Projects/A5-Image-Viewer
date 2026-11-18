@@ -84,6 +84,67 @@ class MainWindowBatchIntegrationTests(unittest.TestCase):
                 window.crop_prefetch_service.shutdown()
                 window.close()
 
+    def test_bulk_add_matches_folder_order_for_all_sort_modes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("aa", "zz"):
+                os.mkdir(os.path.join(folder, name))
+            for number, name in enumerate(("z9.png", "x3.jpg", "a2.png", "b6.jpg", "k5.png")):
+                path = os.path.join(folder, name)
+                Image.new("RGB", (4, 4), "red").save(path)
+                os.utime(path, (1000, 1000 + number % 3))
+
+            window = MainWindow()
+            view = window.thumbnail_view
+            try:
+                view.set_file_access_paused(True)
+                for mode in ("name", "date", "type"):
+                    for reverse in (False, True):
+                        with self.subTest(mode=mode, reverse=reverse):
+                            window.sort_key, window.sort_reverse = mode, reverse
+                            expected = view._scan_files(folder, mode, reverse)
+                            with patch.object(view, "_scan_files", return_value=expected[::2]):
+                                view.load_folder(folder, mode, reverse)
+                            added = [row[0] for row in reversed(expected[1::2])]
+                            existing = expected[0][0]
+                            with patch.object(window, "load_prefetched_preview"):
+                                window.add_thumbnail_paths(added + [existing], keep_selection_path=existing)
+                            model_paths = [view.model().item(i).data(PATH_ROLE) for i in range(view.model().rowCount())]
+                            self.assertEqual(model_paths, [row[0] for row in expected])
+                            self.assertEqual(model_paths, [row[0] for row in view.files])
+                            self.assertEqual(view.currentIndex().data(PATH_ROLE), existing)
+                            for row, path in enumerate(model_paths):
+                                self.assertEqual(view.item_for_path(path.replace(os.sep, "/")).row(), row)
+            finally:
+                view.shutdown()
+                window.crop_prefetch_service.shutdown()
+                window.close()
+
+    def test_bulk_remove_only_loads_final_preview_and_rebuilds_queue_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            paths = [os.path.join(folder, f"{i}.png") for i in range(7)]
+            for path in paths:
+                Image.new("RGB", (4, 4), "red").save(path)
+            window = MainWindow()
+            view = window.thumbnail_view
+            try:
+                view.set_file_access_paused(True)
+                view.load_folder(folder)
+                window.select_image_by_path(paths[2])
+                with (
+                    patch.object(window, "load_prefetched_preview") as preview,
+                    patch.object(view, "sync_worker_records", wraps=view.sync_worker_records) as rebuild,
+                ):
+                    window.remove_thumbnail_paths([paths[1], paths[2], paths[5], paths[2]])
+                preview.assert_called_once_with(paths[3])
+                rebuild.assert_called_once_with()
+                self.assertEqual(window.current_image_path, paths[3])
+                self.assertEqual([row[0] for row in view.files], [paths[i] for i in (0, 3, 4, 6)])
+                self.assertIsNone(view.item_for_path(paths[2]))
+            finally:
+                view.shutdown()
+                window.crop_prefetch_service.shutdown()
+                window.close()
+
     def test_rotate_left_action_and_shortcut_modify_current_image(self):
         with tempfile.TemporaryDirectory() as folder:
             image_path = os.path.join(folder, "image.png")

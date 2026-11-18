@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
+from utils.image_loading import ImageLoadError
 
 from ui.batch_operations import (
     BatchRenameWorker,
@@ -174,6 +175,20 @@ class BatchTransformTests(unittest.TestCase):
             transform_image_atomic(path, "flip_h")
             with Image.open(path) as result:
                 self.assertEqual(result.getexif().get(274), 1)
+
+    def test_oversized_image_is_rejected_before_decode_and_overwrite(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "large.png")
+            Image.new("RGB", (640, 512), "blue").save(path)
+            with open(path, "rb") as image:
+                original = image.read()
+            with (patch("utils.image_loading.Image.open") as open_image,
+                  self.assertRaisesRegex(ImageLoadError, "1 MiB")):
+                transform_image_atomic(path, "right", limit_mb=1)
+            open_image.assert_not_called()
+            with open(path, "rb") as image:
+                self.assertEqual(image.read(), original)
+            self.assertEqual(os.listdir(folder), ["large.png"])
 
     def test_animated_image_is_left_unchanged(self):
         with tempfile.TemporaryDirectory() as folder:

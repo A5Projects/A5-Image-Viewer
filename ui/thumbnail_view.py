@@ -3,11 +3,13 @@ from bisect import bisect_left
 from collections import deque, OrderedDict
 from threading import Condition
 from PyQt6.QtWidgets import QListView, QStyledItemDelegate, QStyle
-from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
+from PyQt6.QtCore import QSize, Qt, QObject, QCoreApplication, QThread, QThreadPool, QRunnable, QTimer, pyqtSignal, pyqtSlot, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QImageReader, QImage, QPainter, QColor, QDrag, QPen, QFont, QBrush
 from ui.theme import theme_colors
 from ui.thumbnail_history import PackedThumbnail, ThumbnailHistory
+from ui.thumbnail_decode import ThumbnailDecodeBudget, read_scaled_thumbnail
 from ui.gif_playback import GifPlayback
+from utils.image_loading import ImageLoadError
 
 PATH_ROLE = Qt.ItemDataRole.UserRole
 KIND_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -17,6 +19,22 @@ MODIFIED_ROLE = Qt.ItemDataRole.UserRole + 4
 WIDTH_ROLE = Qt.ItemDataRole.UserRole + 5
 HEIGHT_ROLE = Qt.ItemDataRole.UserRole + 6
 FINGERPRINT_ROLE = Qt.ItemDataRole.UserRole + 7
+SORT_ORDER_ROLE = Qt.ItemDataRole.UserRole + 8
+
+
+def thumbnail_selection(indexes):
+    """Build one Qt selection range for each contiguous run of rows."""
+    selection = QItemSelection()
+    start = previous = None
+    for index in sorted(indexes, key=lambda idx: idx.row()):
+        if previous is None or index.row() != previous.row() + 1:
+            if start is not None:
+                selection.select(start, previous)
+            start = index
+        previous = index
+    if start is not None:
+        selection.select(start, previous)
+    return selection
 
 
 def thumbnail_fingerprint(stat):
@@ -53,32 +71,13 @@ def thumbnail_item_label(file_name, ext, kind, file_size=0, width=0, height=0):
     return f"        {ext.upper()}\n{file_name}"
 
 
-def _read_thumbnail_image(file_path, target_size):
-    reader = QImageReader(file_path)
-    reader.setAutoTransform(False)
-    size = reader.size()
-    if not size.isValid():
-        return size, QImage()
-    reader.setScaledSize(size.scaled(
-        target_size,
-        target_size,
-        Qt.AspectRatioMode.KeepAspectRatio,
-    ))
-    return size, reader.read()
+def _read_thumbnail_image(file_path, target_size, queue=None):
+    return read_scaled_thumbnail(file_path, QSize(target_size, target_size), queue=queue)
 
 
-def _read_folder_preview_image(file_path, cell_width, cell_height):
-    reader = QImageReader(file_path)
-    reader.setAutoTransform(False)
-    source_size = reader.size()
-    if not source_size.isValid():
-        return QImage()
-    reader.setScaledSize(source_size.scaled(
-        cell_width,
-        cell_height,
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-    ))
-    return reader.read()
+def _read_folder_preview_image(file_path, cell_width, cell_height, queue=None):
+    _, image = read_scaled_thumbnail(file_path, QSize(cell_width, cell_height), fill=True, queue=queue)
+    return image
 
 class ThumbnailItemDelegate(QStyledItemDelegate):
     def initStyleOption(self, option, index):
@@ -111,8 +110,9 @@ class ThumbnailItemDelegate(QStyledItemDelegate):
         super().paint(painter, opt, index)
 
 class ThumbnailTaskQueue:
-    def __init__(self, files, initial_rows, max_awaiting):
+    def __init__(self, files, initial_rows, max_awaiting, decode_budget):
         self.files = files
+        self.decode_budget = decode_budget
         self.condition = Condition()
         self.running = True
         self.background_paused = False
@@ -230,18 +230,23 @@ class ThumbnailTaskQueue:
         with self.condition:
             self.running = False
             self.condition.notify_all()
+        self.decode_budget.wake()
 
 
-class ThumbnailWorker(QThread):
-    thumbnail_ready = pyqtSignal(int, int, object, object, int, int, bool, object)
+class ThumbnailResults(QObject):
+    thumbnail = pyqtSignal(int, int, object, object, int, int, bool, object)
+    folder = pyqtSignal(int, str, object)
 
-    def __init__(self, files, task_queue, generation, target_size, history):
+
+class ThumbnailWorker(QRunnable):
+    def __init__(self, files, task_queue, generation, target_size, history, results):
         super().__init__()
         self.files = files
         self.task_queue = task_queue
         self.generation = generation
         self.target_size = target_size
         self.history = history
+        self.results = results
 
     def run(self):
         while True:
@@ -255,19 +260,30 @@ class ThumbnailWorker(QThread):
             try:
                 cached = self.history.get(file_path, fingerprint, self.target_size)
                 packed = None
-                img = cached.image() if cached is not None else QImage()
+                img = QImage()
+                if cached is not None:
+                    cost = self.target_size ** 2 * 4
+                    budget = self.task_queue.decode_budget
+                    if not budget.acquire(cost, self.task_queue):
+                        return
+                    try:
+                        img = cached.image()
+                    finally:
+                        budget.release(cost)
                 if img.isNull():
-                    size, img = _read_thumbnail_image(file_path, self.target_size)
+                    size, img = _read_thumbnail_image(file_path, self.target_size, self.task_queue)
                     width, height = size.width(), size.height()
                     if fingerprint is not None and not img.isNull():
                         packed = PackedThumbnail.pack(img, width, height)
                 else:
                     width, height = cached.source_width, cached.source_height
+                if not self.task_queue.running:
+                    return
                 if not img.isNull():
                     priority = self.task_queue.is_priority_result(row, priority)
                     self.task_queue.task_done(row, True)
                     success = True
-                    self.thumbnail_ready.emit(
+                    self.results.thumbnail.emit(
                         self.generation, row, record, img, width, height, priority, packed
                     )
             except Exception:
@@ -279,8 +295,9 @@ class ThumbnailWorker(QThread):
 
 
 class FolderPreviewQueue:
-    def __init__(self, paths):
+    def __init__(self, paths, decode_budget=None):
         self.condition = Condition()
+        self.decode_budget = decode_budget
         self.running = True
         self.paused = False
         self.pending = set(paths)
@@ -325,13 +342,13 @@ class FolderPreviewQueue:
         with self.condition:
             self.running = False
             self.condition.notify_all()
+        if self.decode_budget is not None:
+            self.decode_budget.wake()
 
 
-class FolderPreviewWorker(QThread):
-    preview_ready = pyqtSignal(int, str, object)
-
+class FolderPreviewWorker(QRunnable):
     def __init__(self, task_queue, generation, target_size, supported_formats,
-                 entry_limit=2000, start_delay_ms=1200):
+                 entry_limit=2000, start_delay_ms=1200, results=None):
         super().__init__()
         self.task_queue = task_queue
         self.generation = generation
@@ -339,23 +356,18 @@ class FolderPreviewWorker(QThread):
         self.supported_formats = set(supported_formats)
         self.entry_limit = max(100, int(entry_limit))
         self.start_delay_ms = max(0, int(start_delay_ms))
+        self.results = results
 
     def run(self):
-        remaining_delay = self.start_delay_ms
-        while remaining_delay > 0:
-            if self.isInterruptionRequested():
-                return
-            interval = min(50, remaining_delay)
-            self.msleep(interval)
-            remaining_delay -= interval
-
-        while not self.isInterruptionRequested():
+        with self.task_queue.condition:
+            self.task_queue.condition.wait_for(lambda: not self.task_queue.running, self.start_delay_ms / 1000)
+        while self.task_queue.running:
             folder_path = self.task_queue.take_next()
             if folder_path is None:
                 return
             preview = self.build_preview(folder_path)
-            if preview is not None and not preview.isNull() and not self.isInterruptionRequested():
-                self.preview_ready.emit(self.generation, folder_path, preview)
+            if self.results and preview is not None and not preview.isNull() and self.task_queue.running:
+                self.results.folder.emit(self.generation, folder_path, preview)
 
     def build_preview(self, folder_path):
         target = self.target_size
@@ -372,7 +384,7 @@ class FolderPreviewWorker(QThread):
         try:
             with os.scandir(folder_path) as entries:
                 for entry in entries:
-                    if self.isInterruptionRequested():
+                    if not self.task_queue.running:
                         return None
                     inspected += 1
                     if inspected > self.entry_limit:
@@ -382,9 +394,10 @@ class FolderPreviewWorker(QThread):
                     extension = os.path.splitext(entry.name)[1][1:].lower()
                     if extension not in self.supported_formats:
                         continue
-                    image = _read_folder_preview_image(
-                        entry.path, cell_width, cell_height
-                    )
+                    try:
+                        image = _read_folder_preview_image(entry.path, cell_width, cell_height, self.task_queue)
+                    except ImageLoadError:
+                        continue
                     if not image.isNull():
                         images.append(image)
                     if len(images) == 4:
@@ -430,6 +443,36 @@ class FolderPreviewWorker(QThread):
         painter.end()
         return canvas
 
+
+class ThumbnailPool(QThreadPool):
+    def __init__(self, count, priority):
+        # Destroying a view via its Qt parent or Python's cyclic GC can bypass
+        # closeEvent. Keep the pool alive until its native reads have returned.
+        super().__init__(QCoreApplication.instance())
+        self.setMaxThreadCount(count)
+        self.setThreadPriority(priority)
+        self.queue = None
+        self.parent().aboutToQuit.connect(self.stop)
+        self.parent().aboutToQuit.connect(self.join)
+
+    @pyqtSlot()
+    def stop(self):
+        if self.queue is not None:
+            self.queue.stop()
+            self.queue = None
+        self.clear()
+
+    @pyqtSlot()
+    def join(self):
+        self.waitForDone()
+
+    @pyqtSlot()
+    def dispose(self):
+        self.stop()
+        self.join()
+        self.deleteLater()
+
+
 class ThumbnailView(QListView):
     files_dropped = pyqtSignal(list)
     video_queue_changed = pyqtSignal(int, object)
@@ -470,15 +513,20 @@ class ThumbnailView(QListView):
         self.text_icon = self._create_placeholder_icon("text")
         self.files = []
         self.path_items = {}
-        self.workers = []
-        self._old_workers = []
-        self.task_queue = None
-        self.folder_preview_queue = None
-        self.folder_preview_worker = None
-        self._old_folder_preview_workers = []
         self.image_generation = 0
         self.thumbnail_workers = 4
         total_budget = 2048 * 1024 * 1024
+        self.decode_budget = ThumbnailDecodeBudget(self.thumbnail_workers, total_budget)
+        self.thumbnail_pool = ThumbnailPool(self.thumbnail_workers, QThread.Priority.LowPriority)
+        self.folder_pool = ThumbnailPool(1, QThread.Priority.LowestPriority)
+        for pool in (self.thumbnail_pool, self.folder_pool):
+            self.destroyed.connect(pool.stop)
+            self.destroyed.connect(pool.dispose, Qt.ConnectionType.QueuedConnection)
+        # Workers retain this emitter until delivery finishes, even if the
+        # receiving view is already being destroyed.
+        self.thumbnail_results = ThumbnailResults()
+        self.thumbnail_results.thumbnail.connect(self.update_thumbnail, Qt.ConnectionType.QueuedConnection)
+        self.thumbnail_results.folder.connect(self.update_folder_thumbnail, Qt.ConnectionType.QueuedConnection)
         self.thumbnail_history = ThumbnailHistory(history_budget(total_budget))
         self.thumbnail_cache_limit = total_budget - self.thumbnail_history.byte_limit
         self.thumbnail_cache_bytes = 0
@@ -497,6 +545,14 @@ class ThumbnailView(QListView):
         self.load_generation = 0
         self.visible_item_count = 0
         self.visible_rows = []
+
+    @property
+    def task_queue(self):
+        return self.thumbnail_pool.queue
+
+    @property
+    def folder_preview_queue(self):
+        return self.folder_pool.queue
 
     def set_gif_playback(self, enabled):
         enabled = bool(enabled)
@@ -524,7 +580,7 @@ class ThumbnailView(QListView):
         visible = []
         viewport = self.viewport().rect()
         for path in self._painted_gifs:
-            item = self.path_items.get(path)
+            item = self.item_for_path(path)
             if item is not None and not self.isRowHidden(item.row()):
                 rect = self.visualRect(item.index())
                 if viewport.intersects(rect):
@@ -536,7 +592,7 @@ class ThumbnailView(QListView):
 
     def _update_gif_frames(self, frames):
         for path, image in frames.items():
-            item = self.path_items.get(path)
+            item = self.item_for_path(path)
             if item is None or self.isRowHidden(item.row()):
                 continue
             rect = self.visualRect(item.index())
@@ -564,7 +620,7 @@ class ThumbnailView(QListView):
         self._gif_playback.shutdown()
 
     def closeEvent(self, event):
-        self.shutdown_gif_playback()
+        self.shutdown()
         super().closeEvent(event)
         
     def set_thumbnail_size(self, size):
@@ -583,6 +639,8 @@ class ThumbnailView(QListView):
         workers_changed = worker_count != self.thumbnail_workers
         old_cache_limit = self.thumbnail_cache_limit
         self.thumbnail_workers = worker_count
+        self.thumbnail_pool.setMaxThreadCount(worker_count)
+        self.decode_budget.configure(worker_count, cache_limit)
         self.thumbnail_history.set_limit(history_budget(cache_limit))
         self.thumbnail_cache_limit = cache_limit - self.thumbnail_history.byte_limit
         self._evict_to_limit()
@@ -616,28 +674,9 @@ class ThumbnailView(QListView):
 
     def shutdown(self):
         self.shutdown_gif_playback()
-        self.image_generation += 1
-        if self.task_queue is not None:
-            self.task_queue.stop()
-        if self.folder_preview_queue is not None:
-            self.folder_preview_queue.stop()
-        if self.folder_preview_worker is not None:
-            self.folder_preview_worker.requestInterruption()
-        all_workers = self.workers + self._old_workers
-        for worker in all_workers:
-            worker.wait()
-        folder_workers = list(self._old_folder_preview_workers)
-        if self.folder_preview_worker is not None:
-            folder_workers.append(self.folder_preview_worker)
-        for worker in folder_workers:
-            worker.requestInterruption()
-            worker.wait()
-        self.workers = []
-        self._old_workers = []
-        self.task_queue = None
-        self.folder_preview_queue = None
-        self.folder_preview_worker = None
-        self._old_folder_preview_workers = []
+        self._stop_thumbnail_workers()
+        self.thumbnail_pool.join()
+        self.folder_pool.join()
         self.thumbnail_history.clear()
         
     def load_folder(self, folder_path, sort_key="name", reverse=False,
@@ -679,7 +718,7 @@ class ThumbnailView(QListView):
                 item.setData(height, HEIGHT_ROLE)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.thumbnail_model.appendRow(item)
-            self.path_items[file_path] = item
+            self.register_item(item)
         self.setUpdatesEnabled(True)
         self.apply_filter()
 
@@ -688,6 +727,7 @@ class ThumbnailView(QListView):
         self.video_queue_changed.emit(self.load_generation, video_paths)
         self.prioritize_rows_around(0)
         
+    @pyqtSlot(int, int, object, object, int, int, bool, object)
     def update_thumbnail(self, generation, row, record, img, width, height, priority, packed):
         if generation != self.image_generation:
             return
@@ -769,8 +809,9 @@ class ThumbnailView(QListView):
             item.setData(img.width(), WIDTH_ROLE)
             item.setData(img.height(), HEIGHT_ROLE)
 
+    @pyqtSlot(int, str, object)
     def update_folder_thumbnail(self, generation, folder_path, image):
-        if generation != self.load_generation or image is None or image.isNull():
+        if generation != self.image_generation or image is None or image.isNull():
             return
         item = self.item_for_path(folder_path)
         if item is None or item.data(KIND_ROLE) != "folder":
@@ -778,16 +819,8 @@ class ThumbnailView(QListView):
         self._admit_thumbnail(folder_path, "folder", image, priority=False)
 
     def item_for_path(self, file_path):
-        item = self.path_items.get(file_path)
-        if item is not None or not file_path:
-            return item
-        target = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
-        for stored_path, stored_item in self.path_items.items():
-            stored = os.path.normcase(
-                os.path.normpath(os.path.abspath(stored_path))
-            )
-            if stored == target:
-                return stored_item
+        if file_path:
+            return self.path_items.get(os.path.normcase(os.path.abspath(file_path)))
         return None
 
     def visible_image_paths(self, editable_only=False):
@@ -810,7 +843,7 @@ class ThumbnailView(QListView):
     def register_item(self, item):
         path = item.data(PATH_ROLE) if item is not None else None
         if path:
-            self.path_items[path] = item
+            self.path_items[os.path.normcase(os.path.abspath(path))] = item
 
     def sync_worker_records(self):
         records = []
@@ -831,24 +864,26 @@ class ThumbnailView(QListView):
         self.files = records
         self._start_thumbnail_workers()
 
-    def unregister_path(self, file_path):
-        item = self.path_items.pop(file_path, None)
-        if item is not None and item.data(KIND_ROLE) == "folder":
-            self.thumbnail_history.discard_tree(file_path)
-        else:
-            self.thumbnail_history.discard(file_path)
-        self._evict_path(file_path, reset_icon=False)
+    def unregister_items(self, items):
+        for item in items:
+            path = item.data(PATH_ROLE)
+            self.path_items.pop(os.path.normcase(os.path.abspath(path)), None)
+            if item.data(KIND_ROLE) == "folder":
+                self.thumbnail_history.discard_tree(path)
+            else:
+                self.thumbnail_history.discard(path)
+            self._evict_path(path, reset_icon=False)
         self.cache_background_paused = self.thumbnail_cache_bytes >= self.thumbnail_cache_limit
+        # sync_worker_records will build the new queue once the model rows are removed.
         self._update_background_pause()
-        self._resume_background_fill()
 
     def rename_indexed_path(self, old_path, new_path, item):
         discard = (self.thumbnail_history.discard_tree if item.data(KIND_ROLE) == "folder"
                    else self.thumbnail_history.discard)
         discard(old_path)
         discard(new_path)
-        self.path_items.pop(old_path, None)
-        self.path_items[new_path] = item
+        self.path_items.pop(os.path.normcase(os.path.abspath(old_path)), None)
+        self.register_item(item)
         cache_entry = self.thumbnail_cache.pop(old_path, None)
         if cache_entry is not None:
             self.thumbnail_cache[new_path] = cache_entry
@@ -861,11 +896,11 @@ class ThumbnailView(QListView):
             self.thumbnail_history.discard(old_path)
             self.thumbnail_history.discard(new_path)
         for old_path in mapping:
-            self.path_items.pop(old_path, None)
+            self.path_items.pop(os.path.normcase(os.path.abspath(old_path)), None)
         for old_path, new_path in mapping.items():
             item = items.get(old_path)
             if item is not None:
-                self.path_items[new_path] = item
+                self.register_item(item)
 
         remapped_cache = OrderedDict()
         for path, entry in self.thumbnail_cache.items():
@@ -922,41 +957,33 @@ class ThumbnailView(QListView):
         if self.file_access_paused:
             return
         if not any(record[4] == "image" for record in self.files):
-            self.task_queue = None
             self._start_folder_preview_worker()
             return
 
-        self.task_queue = ThumbnailTaskQueue(
+        self.thumbnail_pool.queue = ThumbnailTaskQueue(
             self.files,
             self._uncached_background_rows(),
-            max_awaiting=max(4, self.thumbnail_workers * 2)
+            max_awaiting=max(4, self.thumbnail_workers * 2),
+            decode_budget=self.decode_budget,
         )
         self._update_background_pause(force=True)
-        self.workers = []
         for _ in range(self.thumbnail_workers):
             worker = ThumbnailWorker(
                 self.files,
                 self.task_queue,
                 self.image_generation,
                 self.iconSize().width(),
-                self.thumbnail_history
+                self.thumbnail_history,
+                self.thumbnail_results,
             )
-            worker.thumbnail_ready.connect(self.update_thumbnail)
-            self.workers.append(worker)
-            worker.start(QThread.Priority.LowPriority)
+            self.thumbnail_pool.start(worker)
         self._start_folder_preview_worker()
         self.prioritize_visible_thumbnails()
 
     def _stop_thumbnail_workers(self):
         self.image_generation += 1
-        self._stop_folder_preview_worker()
-        if self.task_queue is not None:
-            self.task_queue.stop()
-        if self.workers:
-            self._old_workers.extend(self.workers)
-        self.workers = []
-        self.task_queue = None
-        self._old_workers = [worker for worker in self._old_workers if worker.isRunning()]
+        self.folder_pool.stop()
+        self.thumbnail_pool.stop()
 
     def _start_folder_preview_worker(self):
         folder_paths = [
@@ -965,31 +992,17 @@ class ThumbnailView(QListView):
         ]
         if not folder_paths or not self.show_folders:
             return
-        self.folder_preview_queue = FolderPreviewQueue(folder_paths)
+        self.folder_pool.queue = FolderPreviewQueue(folder_paths, self.decode_budget)
         paused = self.cache_background_paused or self.interactive_background_paused
         self.folder_preview_queue.set_paused(paused)
-        self.folder_preview_worker = FolderPreviewWorker(
+        worker = FolderPreviewWorker(
             self.folder_preview_queue,
-            self.load_generation,
+            self.image_generation,
             self.iconSize().width(),
             self._supported_image_formats(),
+            results=self.thumbnail_results,
         )
-        self.folder_preview_worker.preview_ready.connect(self.update_folder_thumbnail)
-        self.folder_preview_worker.start(QThread.Priority.LowestPriority)
-
-    def _stop_folder_preview_worker(self):
-        if self.folder_preview_queue is not None:
-            self.folder_preview_queue.stop()
-        if self.folder_preview_worker is not None:
-            self.folder_preview_worker.requestInterruption()
-            if self.folder_preview_worker.isRunning():
-                self._old_folder_preview_workers.append(self.folder_preview_worker)
-        self.folder_preview_queue = None
-        self.folder_preview_worker = None
-        self._old_folder_preview_workers = [
-            worker for worker in self._old_folder_preview_workers
-            if worker.isRunning()
-        ]
+        self.folder_pool.start(worker)
 
     def _request_folder_priority(self, rows):
         if self.folder_preview_queue is None:
@@ -1030,22 +1043,28 @@ class ThumbnailView(QListView):
         self.task_queue.add_background_rows(self._uncached_background_rows())
 
     def request_thumbnail_refresh(self, file_path):
-        self.thumbnail_history.discard(file_path)
-        item = self.item_for_path(file_path)
-        if item is None or item.data(KIND_ROLE) != "image":
-            return
-        file_path = item.data(PATH_ROLE)
-        self._gif_playback.invalidate(file_path)
-        self._gif_icons.pop(file_path, None)
-        self._evict_path(file_path)
-        row = item.row()
-        if 0 <= row < len(self.files) and self.files[row][0] == file_path:
-            # Replacing the tuple also invalidates a pending result for this row,
-            # including in-place edits that deliberately preserve the timestamp.
-            self.files[row] = (
-                *self.files[row][:5], item.data(SIZE_ROLE) or 0, item.data(FINGERPRINT_ROLE)
-            )
-        self._request_image_rows([row], retry=True)
+        self.request_thumbnail_refreshes([file_path])
+
+    def request_thumbnail_refreshes(self, paths):
+        rows = []
+        for path in paths:
+            self.thumbnail_history.discard(path)
+            item = self.item_for_path(path)
+            if item is None or item.data(KIND_ROLE) != "image":
+                continue
+            path = item.data(PATH_ROLE)
+            self._gif_playback.invalidate(path)
+            self._gif_icons.pop(path, None)
+            self._evict_path(path)
+            row = item.row()
+            if 0 <= row < len(self.files) and self.files[row][0] == path:
+                # Replacing the tuple also invalidates a pending result for this row,
+                # including in-place edits that deliberately preserve the timestamp.
+                self.files[row] = (
+                    *self.files[row][:5], item.data(SIZE_ROLE) or 0, item.data(FINGERPRINT_ROLE)
+                )
+            rows.append(row)
+        self._request_image_rows(rows, retry=True)
 
     def invalidate_all_thumbnails(self):
         self.load_generation += 1
@@ -1339,17 +1358,7 @@ class ThumbnailView(QListView):
         selected = selection.selectedIndexes()
         visible = [index for index in selected if not self.isRowHidden(index.row())]
         if len(visible) < len(selected):
-            visible.sort(key=lambda index: index.row())
-            kept = QItemSelection()
-            start = previous = None
-            for index in visible:
-                if previous is None or index.row() != previous.row() + 1:
-                    if start is not None:
-                        kept.select(start, previous)
-                    start = index
-                previous = index
-            if start is not None:
-                kept.select(start, previous)
+            kept = thumbnail_selection(visible)
             selection.select(kept, QItemSelectionModel.SelectionFlag.ClearAndSelect)
         current = self.currentIndex()
         if current.isValid() and self.isRowHidden(current.row()):

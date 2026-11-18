@@ -2,6 +2,8 @@
 
 import math
 import os
+import warnings
+from contextlib import contextmanager
 
 from PIL import Image
 from PyQt6.QtCore import QSize
@@ -11,6 +13,10 @@ from utils.file_ops import get_image_settings
 
 MIB = 1024 * 1024
 MAX_PREFETCH_IMAGE_BYTES = 256 * MIB
+
+# Pillow may allocate a GIF disposal canvas during seek(), before a caller can
+# inspect the next frame's size. Enforce the configured pixel ceiling there too.
+warnings.filterwarnings("error", category=Image.DecompressionBombWarning, module=r"^PIL\.Image$")
 
 
 class ImageLoadError(Exception):
@@ -31,10 +37,9 @@ def check_image_size(width, height, limit_mb):
     if required > limit_mb * MIB:
         raise ImageLoadError(
             f"This image ({width:,} × {height:,}) requires approximately "
-            f"{math.ceil(required / MIB):,} MiB to decode. "
+            f"{math.ceil(required / MIB):,} MiB of pixel memory. "
             f"Your limit is {limit_mb:,} MiB.\n\n"
-            "Increase Maximum decoded image size in Settings → Resource Usage, "
-            "then open the image again."
+            "Increase Maximum decoded image size in Settings → Resource Usage to allow this size."
         )
 
 
@@ -81,12 +86,13 @@ def read_full_image(path):
         reader.setFileName("")
 
 
-def read_pil_image(path, *, png_text=None):
-    limit = apply_image_loading_settings()
-    # Qt can inspect the header without triggering Pillow's pixel guard first.
-    reader = QImageReader(path)
+@contextmanager
+def open_limited_pil_image(path, limit):
+    # Some Pillow codecs allocate a canvas inside Image.open(). Probe the header
+    # first, and recheck the opened image in case the file changed.
+    reader = QImageReader(os.fspath(path))
     try:
-        size = reader.size()
+        size = _first_frame_size(reader, path)
         if size.isValid():
             check_image_size(size.width(), size.height(), limit)
     finally:
@@ -94,17 +100,24 @@ def read_pil_image(path, *, png_text=None):
     try:
         with Image.open(path) as image:
             check_image_size(image.width, image.height, limit)
-            mode = "RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB"
-            pixels = image.convert(mode)
-            if png_text is not None and image.format == "PNG":
-                png_text.update(image.text)
-            return pixels
-    except Image.DecompressionBombError as error:
+            yield image
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
         raise ImageLoadError(
             f"This image exceeds the {limit:,} MiB decoded-image limit. "
             "Increase Maximum decoded image size in Settings → Resource Usage, "
             "then open the image again."
         ) from error
+
+
+def read_pil_image(path, *, png_text=None):
+    limit = apply_image_loading_settings()
+    try:
+        with open_limited_pil_image(path, limit) as image:
+            mode = "RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB"
+            pixels = image.convert(mode)
+            if png_text is not None and image.format == "PNG":
+                png_text.update(image.text)
+            return pixels
     except (OSError, ValueError) as error:
         raise ImageLoadError(f"Unable to open image: {error}") from error
     except MemoryError as error:

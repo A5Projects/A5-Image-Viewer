@@ -5,7 +5,7 @@ from threading import Condition
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox, 
                              QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsItem,
                              QCheckBox, QFileDialog, QMessageBox, QMenu, QToolButton, QInputDialog)
-from PyQt6.QtCore import (Qt, QRectF, QPointF, pyqtSignal, QEvent, QObject,
+from PyQt6.QtCore import (Qt, QRectF, QPointF, pyqtSignal, pyqtSlot, QEvent, QObject,
                           QThread, QSize, QTimer)
 from PyQt6.QtGui import (QPixmap, QColor, QPen, QShortcut, QKeySequence, QAction,
                          QImageReader, QIcon, QPainter, QPolygonF, QTransform)
@@ -62,9 +62,14 @@ class CropPrefetchQueue:
 class CropPrefetchWorker(QThread):
     image_ready = pyqtSignal(int, str, object, object, int)
 
-    def __init__(self, task_queue):
-        super().__init__()
+    def __init__(self, task_queue, parent):
+        super().__init__(parent)
         self.task_queue = task_queue
+
+    @pyqtSlot()
+    def stop_and_wait(self):
+        self.task_queue.stop()
+        self.wait()
 
     def run(self):
         while True:
@@ -91,9 +96,12 @@ class CropPrefetchService(QObject):
         self.memory_limit = 0
         self.task_queue = None
         self.workers = []
+        self.closed = False
         self.configure(settings)
 
     def configure(self, settings):
+        if self.closed:
+            return
         worker_count = max(1, min(2, int(settings.get("crop_prefetch_workers", 2))))
         memory_limit = max(128, int(settings.get("crop_prefetch_mb", 512))) * 1024 * 1024
         self.memory_limit = memory_limit
@@ -102,12 +110,19 @@ class CropPrefetchService(QObject):
         self._stop_workers()
         self.worker_count = worker_count
         self.task_queue = CropPrefetchQueue()
-        self.workers = []
         for _ in range(worker_count):
-            worker = CropPrefetchWorker(self.task_queue)
-            worker.image_ready.connect(self.image_ready.emit)
+            worker = CropPrefetchWorker(self.task_queue, self)
+            worker.image_ready.connect(self._forward_image, Qt.ConnectionType.QueuedConnection)
+            # Qt emits destroyed before deleting children, even when our
+            # owner disappears without closing its window.
+            self.destroyed.connect(worker.stop_and_wait, Qt.ConnectionType.DirectConnection)
             self.workers.append(worker)
             worker.start(QThread.Priority.LowPriority)
+
+    @pyqtSlot(int, str, object, object, int)
+    def _forward_image(self, generation, path, fingerprint, image, cost):
+        if self.task_queue is not None and generation == self.generation:
+            self.image_ready.emit(generation, path, fingerprint, image, cost)
 
     def request(self, paths):
         self.generation += 1
@@ -120,14 +135,19 @@ class CropPrefetchService(QObject):
         if self.task_queue is not None:
             self.task_queue.set_tasks(self.generation, [], self.memory_limit)
 
+    @pyqtSlot()
     def shutdown(self):
+        self.closed = True
         self._stop_workers()
 
     def _stop_workers(self):
         if self.task_queue is not None:
+            self.generation += 1
             self.task_queue.stop()
         for worker in self.workers:
             worker.wait()
+            self.destroyed.disconnect(worker.stop_and_wait)
+            worker.setParent(None)
         self.workers = []
         self.task_queue = None
 
@@ -806,8 +826,9 @@ class CropBoard(QDialog):
                 paths.append(candidate)
         self.prefetch_generation = self.prefetch_service.request(paths)
 
+    @pyqtSlot(int, str, object, object, int)
     def on_prefetch_ready(self, generation, path, fingerprint, image, cost):
-        if generation != self.prefetch_generation or image.isNull():
+        if not self.prefetch_connected or generation != self.prefetch_generation or image.isNull():
             return
         if self._fingerprint(path) != fingerprint:
             return

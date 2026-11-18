@@ -89,6 +89,46 @@ class AnimatedConversionTests(unittest.TestCase):
             self.assertEqual(rgba.getpixel((1, 1))[3], 0)
             self.assertEqual(rgba.getpixel((4, 1))[3], 255)
 
+    def test_size_limit_skips_oversized_png_in_plain_and_comfy_conversion(self):
+        large = self.folder / "large.png"
+        Image.new("RGB", (640, 512), "red").save(large)
+        original = large.read_bytes()
+        target = self.output / "large.webp"
+        target.write_bytes(b"previous result")
+        for keep_comfy in (False, True):
+            with self.subTest(keep_comfy=keep_comfy):
+                small = self.folder / "small.png"
+                Image.new("RGB", (8, 8), "blue").save(small)
+                with patch("ui.convert_dialog.get_image_settings", return_value={"max_decoded_image_mb": 1}):
+                    worker = ConvertWorker([str(large), str(small)], str(self.output), "", "WebP",
+                                           None, 90, False, True, keep_comfy)
+                errors = []
+                worker.error.connect(lambda path, message: errors.append((path, message)))
+                worker.run()
+                self.assertEqual([path for path, _ in errors], [str(large)])
+                self.assertIn("1 MiB", errors[0][1])
+                self.assertEqual(large.read_bytes(), original)
+                self.assertEqual(target.read_bytes(), b"previous result")
+                self.assertFalse(small.exists())
+                with Image.open(self.output / "small.webp") as result:
+                    self.assertEqual(result.size, (8, 8))
+
+    def test_animation_respects_frame_and_accumulated_transform_limits(self):
+        source = self.folder / "many.gif"
+        for size, rotate, message in (((640, 512), None, "1 MiB"),
+                                      ((400, 400), "right", "Rotating or flipping")):
+            with self.subTest(size=size):
+                Image.new("RGB", size, "red").save(
+                    source, save_all=True, append_images=[Image.new("RGB", size, "blue")],
+                    loop=0, duration=100,
+                )
+                before = source.read_bytes()
+                with patch("ui.convert_dialog.get_image_settings", return_value={"max_decoded_image_mb": 1}):
+                    errors = self.convert(source, rotate=rotate, expect_success=False)
+                self.assertIn(message, errors[0][1])
+                self.assertEqual(source.read_bytes(), before)
+                self.assertEqual(list(self.output.iterdir()), [])
+
     def test_animated_webp_can_be_flipped_in_place_with_keep_date_and_delete_original(self):
         source = self.animation("original.webp", loop=4)
         stamp = 1_700_000_000_000_000_000

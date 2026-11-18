@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from utils.file_ops import get_image_settings
+from utils.image_loading import open_limited_pil_image
 
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -425,12 +427,14 @@ def _image_save_options(opened, source_format):
     return options
 
 
-def transform_image_atomic(file_path, operation):
+def transform_image_atomic(file_path, operation, limit_mb=None):
     folder = os.path.dirname(file_path)
     extension = os.path.splitext(file_path)[1]
     temp_path = None
     try:
-        with Image.open(file_path) as opened:
+        if limit_mb is None:
+            limit_mb = get_image_settings()["max_decoded_image_mb"]
+        with open_limited_pil_image(file_path, limit_mb) as opened:
             source_format = opened.format
             frame_count = int(getattr(opened, "n_frames", 1))
             if frame_count > 1:
@@ -480,9 +484,10 @@ class BatchRotateWorker(QThread):
         successful = []
         errors = {}
         total = len(self.paths)
+        limit_mb = get_image_settings()["max_decoded_image_mb"]
         for position, file_path in enumerate(self.paths, 1):
             try:
-                transform_image_atomic(file_path, self.operation)
+                transform_image_atomic(file_path, self.operation, limit_mb)
                 successful.append(file_path)
             except Exception as error:
                 errors[file_path] = str(error)

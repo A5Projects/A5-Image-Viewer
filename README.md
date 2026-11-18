@@ -170,6 +170,8 @@ can shrink in narrow windows even when the folder history contains long paths.
 In **Settings → Folder history**, choose how many visited folders the address
 bar remembers and how many destinations **Copy To** and **Move To** share.
 Both default to 30. Lowering a limit keeps the most recently used folders.
+The address dropdown also remembers offline folders. A5 checks availability
+when you open a saved path, so disconnected drives do not delay loading the list.
 
 Renaming briefly retries if an image reader still has the file open. The Rename
 window stays responsive, and Cancel stops further attempts. Name collisions keep
@@ -224,7 +226,9 @@ Settings provides **Maximum decoded image size** under Resource Usage, defaultin
 to **1,024 MiB** (adjustable from 64 to 65,536 MiB). This is a per-image decoding
 limit, not a limit on total application memory. Preview, fullscreen/windowed
 viewing, Crop, and Adjust explain when an image exceeds it and suggest raising
-the setting. Images remain at full resolution. Images above **256 MiB decoded**
+the setting. Adjust also checks the output dimensions before exporting. Batch
+Convert and Rotate report files over the limit and continue with the next file.
+Images above **256 MiB decoded**
 are skipped by viewer/Crop preloading and loaded only when opened; ordinary
 images retain preloading.
 
@@ -238,12 +242,21 @@ The thumbnail history uses up to a quarter of the thumbnail RAM budget in
 it fills. The history disappears when you close A5 and creates no database on
 disk. Changing the thumbnail size starts a fresh history.
 
+Grid thumbnails and folder mosaics share the configured worker count, including
+when you switch folders during loading. A5 also estimates the RAM each decode
+will need. On the Conservative preset, for example, it aims for 128 MiB of
+simultaneous decode work. A larger image that Qt can read runs on its own.
+
 Turn on **Settings → Thumbnails → Animate GIFs** to play GIFs in the grid and
 the bottom-left preview. Check **Only in preview** to play just the selected
 GIF. Playback is off by default. Up to 32 visible GIF thumbnails can play at
 once within a shared 128 MiB animation budget. Larger GIFs can still play in
 the preview, which has its own budget of up to 256 MiB. GIFs that exceed the
 available animation budget show a still image.
+
+**Show → Videos** starts off each time you launch A5. Enabling it allows
+hardware-accelerated video thumbnails and previews. Turning it off cancels
+pending video requests and releases the video player.
 
 **Smooth downscaling** in Settings is enabled by default for the preview and
 fullscreen/windowed image viewer. It uses CPU rendering below 100% zoom;

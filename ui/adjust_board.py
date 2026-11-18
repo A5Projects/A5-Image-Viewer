@@ -2,7 +2,7 @@ import math
 import os
 from ui.about_dialog import install_about_shortcut
 from utils.atomic_output import staged_output
-from utils.image_loading import read_pil_image
+from utils.image_loading import MIB, check_image_size, read_pil_image
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, 
                              QGraphicsPixmapItem, QSlider, QLabel, QPushButton, QCheckBox, 
                              QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox, QGridLayout,
@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGraphicsView, Q
 from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence, QColor
 from PIL import Image, ImageEnhance, ImageOps, ImageFilter, PngImagePlugin
-from utils.file_ops import (get_adjustment_settings, set_adjustment_settings,
+from utils.file_ops import (get_adjustment_settings, set_adjustment_settings, get_image_settings,
                             get_adjust_auto_name_copies, set_adjust_auto_name_copies,
                             get_adjust_resampling, set_adjust_resampling)
 
@@ -734,17 +734,24 @@ class AdjustBoard(QDialog):
             )
         return self.RESAMPLING_METHODS.get(key, Image.Resampling.LANCZOS)
 
-    def resample_image(self, image, destination_size):
-        method = self.selected_resampling_method(image.size, destination_size)
+    def resample_image(self, image, destination_size, box=None, *, limit_mb=None):
+        source_size = image.size if box is None else (box[2] - box[0], box[3] - box[1])
+        method = self.selected_resampling_method(source_size, destination_size)
         key = self.resample_combo.currentData() or "auto"
         resize_options = {}
         if (
             key == "auto" and method == Image.Resampling.LANCZOS and
-            destination_size[0] < image.width and
-            destination_size[1] < image.height
+            destination_size[0] < source_size[0] and
+            destination_size[1] < source_size[1]
         ):
             resize_options["reducing_gap"] = 3.0
-        resized = image.resize(destination_size, method, **resize_options)
+        # Pillow's horizontal pass uses the source height and destination width.
+        # Shrink vertically first if that work image would exceed the limit.
+        if (limit_mb is not None and box is None and method != Image.Resampling.NEAREST
+                and image.width < destination_size[0] and image.height > destination_size[1]
+                and destination_size[0] * image.height * 4 > limit_mb * MIB):
+            image = image.resize((image.width, destination_size[1]), method)
+        resized = image.resize(destination_size, method, box=box, **resize_options)
         if key not in ("lanczos_sharper", "bicubic_sharper"):
             return resized
 
@@ -756,12 +763,12 @@ class AdjustBoard(QDialog):
             sharpened = Image.merge("RGBA", (*sharpened.split(), alpha))
         return sharpened
 
-    def render_resized_image(self, image, target_size):
+    def render_resized_image(self, image, target_size, *, limit_mb=None):
         target_width, target_height = target_size
         geometry = self.geometry_combo.currentData() or "preserve"
 
         if geometry in ("preserve", "stretch"):
-            return self.resample_image(image, target_size)
+            return self.resample_image(image, target_size, limit_mb=limit_mb)
 
         if geometry == "fit":
             fitted_size = self.contained_dimensions(image.size, target_size)
@@ -769,16 +776,19 @@ class AdjustBoard(QDialog):
 
         if geometry == "fill":
             scale = max(target_width / image.width, target_height / image.height)
-            cover_size = (
-                max(target_width, math.ceil(image.width * scale)),
-                max(target_height, math.ceil(image.height * scale)),
+            cover_width = max(target_width, math.ceil(image.width * scale))
+            cover_height = max(target_height, math.ceil(image.height * scale))
+            left = (cover_width - target_width) // 2
+            top = (cover_height - target_height) // 2
+            # Map the centered output rectangle back to the source. Pillow
+            # samples that box directly into a target-sized canvas.
+            box = (
+                left * image.width / cover_width,
+                top * image.height / cover_height,
+                (left + target_width) * image.width / cover_width,
+                (top + target_height) * image.height / cover_height,
             )
-            resized = self.resample_image(image, cover_size)
-            left = max(0, (resized.width - target_width) // 2)
-            top = max(0, (resized.height - target_height) // 2)
-            return resized.crop(
-                (left, top, left + target_width, top + target_height)
-            )
+            return self.resample_image(image, target_size, box)
 
         fitted_size = self.contained_dimensions(image.size, target_size)
         resized = self.resample_image(image, fitted_size)
@@ -1046,9 +1056,23 @@ class AdjustBoard(QDialog):
 
     def render_final_image(self):
         target_size = self.target_dimensions()
-        final_img = self.apply_adjustments(self.original_pil.copy())
+        output_size = self.output_dimensions()
+        limit = get_image_settings()["max_decoded_image_mb"]
+        check_image_size(*self.original_pil.size, limit)
+        check_image_size(*output_size, limit)
+        if self.rotation_degrees % 90:
+            # Pillow expands the rotated corners outward on the original pixel
+            # grid. The right-angle fast paths preserve the pixel count.
+            width, height = output_size
+            angle = math.radians(self.rotation_degrees)
+            cos, sin = abs(math.cos(angle)), abs(math.sin(angle))
+            span_x, span_y = width * cos + height * sin, width * sin + height * cos
+            rotated_width = math.ceil((width + span_x) / 2) - math.floor((width - span_x) / 2)
+            rotated_height = math.ceil((height + span_y) / 2) - math.floor((height - span_y) / 2)
+            check_image_size(rotated_width, rotated_height, limit)
+        final_img = self.apply_adjustments(self.original_pil)
         if target_size != self.original_pil.size:
-            final_img = self.render_resized_image(final_img, target_size)
+            final_img = self.render_resized_image(final_img, target_size, limit_mb=limit)
         return self.rotated_image(final_img)
 
     def save_result_to_path(self, output_path):

@@ -192,20 +192,58 @@ class BrowserNavigationTests(unittest.TestCase):
             self.assertEqual(Path(dialog.list_widget.item(0).text()), folders[3])
             dialog.close()
 
-    def test_offline_folders_do_not_leave_evicted_entries_in_the_dropdown(self):
+    def test_address_history_checks_offline_folders_only_on_use(self):
         current, offline, oldest, new = [Path(self.temp.name) / name for name in ("a", "b", "c", "d")]
         for folder in (current, oldest, new):
             folder.mkdir()
         file_ops.set_folder_history_limits(3, 30)
         for folder in (oldest, offline, current):
             file_ops.add_address_folder(str(folder))
-        self.window.load_address_history()
-        self.window.remember_folder(str(new))
         bar = self.window.address_bar
-        self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [new, current])
+        with patch("ui.main_window.os.path.isdir", side_effect=AssertionError("unexpected history probe")):
+            self.window.load_address_history()
+            self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [current, offline, oldest])
+        with patch("ui.main_window.QMessageBox.warning") as warning:
+            self.window.on_address_selected(1)
+        warning.assert_called_once()
+        self.assertIn(str(offline), warning.call_args.args[2])
+        self.window.remember_folder(str(new))
+        self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [new, current, offline])
         offline.mkdir()
-        self.window.remember_folder(str(offline))
+        self.window.on_address_selected(2)
         self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [offline, new, current])
+
+    def test_videos_require_opt_in_even_with_pending_thumbnail_requests(self):
+        path = str(Path(self.temp.name) / "clip.mp4")
+        Path(path).touch()
+        grabber = self.window.video_frame_grabber
+        self.assertFalse(self.window.show_videos_action.isChecked())
+        with patch.object(grabber, "_ensure_backend", return_value=False) as initialize:
+            self.window.navigate_to_folder(self.temp.name)
+            generation = self.view.load_generation
+            grabber.set_thumbnail_queue(generation, [path])
+            grabber.prioritize(generation, [path])
+            grabber.grab(path)
+            self.app.processEvents()
+            initialize.assert_not_called()
+            self.assertIsNone(self.view.item_for_path(path))
+
+            self.window.show_videos_action.setChecked(True)
+            self.wait_until(lambda: initialize.called)
+            self.assertIsNotNone(self.view.item_for_path(path))
+            initialize.reset_mock()
+            grabber.failed_paths.clear()
+            self.window.show_menu.show()
+            grabber.prioritize(self.view.load_generation, [path])
+            self.window.show_videos_action.setChecked(False)
+            grabber.prioritize(self.view.load_generation, [path])
+            grabber.grab(path)
+            self.app.processEvents()
+            initialize.assert_not_called()
+            self.assertFalse(grabber.pending_paths)
+            self.assertIsNone(grabber.current_path)
+            self.assertFalse(grabber.timer.isActive())
+            self.window.show_menu.hide()
 
     def test_up_button_works_from_address_field_but_backspace_still_edits_text(self):
         root = Path(self.temp.name)

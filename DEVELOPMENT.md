@@ -388,8 +388,8 @@ The thumbnail system is deliberately demand-aware:
 1. A folder scan creates placeholder rows synchronously.
 2. `ThumbnailTaskQueue` tracks background, priority, in-flight, awaiting-GUI,
    failed, and re-requested rows under a `Condition`.
-3. Low-priority `ThumbnailWorker` threads decode scaled images with
-   `QImageReader`.
+3. Low-priority `ThumbnailWorker` jobs decode scaled images with
+   `QImageReader` on a pool shared across folder generations.
 4. Visible/nearby rows are promoted. Delivery is backpressured by
    `max_awaiting` so workers cannot flood the GUI event queue.
 5. Results include a generation number. Stale results from an older folder or
@@ -415,8 +415,21 @@ about 1.2 seconds before background work, scans at most 2000 direct entries,
 does not recurse, and uses at most four decodable images. Empty folders retain
 the generic folder icon.
 
-Video previews are owned by `VideoFrameGrabber` in `main_window.py` and use Qt
-Multimedia (`QMediaPlayer`/`QVideoSink`) when available. Video rows display file
+`ui/thumbnail_decode.py` admits grid and mosaic decodes against the same
+worker count and estimated working memory. The decode allowance is one quarter
+of the configured thumbnail cache, up to 512 MiB. An image whose estimate
+exceeds that allowance can run alone, subject to Qt's allocation limit.
+PNG, WebP and progressive JPEG estimates allow for full-resolution pixels.
+Baseline JPEGs can use Qt's native downsampling. Waiting jobs release their
+file handles and check the source dimensions again after admission.
+When the browser closes, it stops the queues and waits for active reads to
+release their file handles. Destroying the view also stops and disposes its
+pools. Queued results use a separate signal object retained by the workers.
+
+Video previews are owned by `VideoFrameGrabber` in `main_window.py`. Enabling
+Show → Videos allows the first request to load Qt Multimedia and create a
+`QMediaPlayer` and `QVideoSink`. Unchecking Videos cancels active and queued
+requests immediately and releases the backend. Video rows display file
 size immediately, before a frame is extracted. Requests are serialized and
 generation checked. A missing multimedia backend should degrade to placeholder
 icons, not prevent image browsing.
@@ -575,7 +588,8 @@ per-image cap in `_read_prefetch_image`. Header dimensions are checked before
 decoding, and actual decoded cost is checked before caching. This shared worker
 serves both Crop and viewer preloading. Larger images load on demand at full
 resolution. Cache entries are checked against `(size, mtime_ns)` fingerprints
-before reuse.
+before reuse. Prefetch results reach a Qt slot on the GUI thread, which drops
+obsolete generations. Closing the browser shuts down its prefetch service.
 
 `utils/image_loading.py` implements the foreground decoding policy. The default
 limit is 1024 MiB, independently configurable from 64 to 65536 MiB. The Qt
@@ -621,6 +635,10 @@ are Automatic, Lanczos, sharper Lanczos, Bicubic, sharper Bicubic, Bilinear,
 Hamming, Nearest, and Box. Automatic uses Lanczos for reduction and Bicubic for
 enlargement; the sharper variants add a small unsharp mask.
 
+Fill maps the centered crop rectangle into the source and samples it directly
+at the requested output size. Export checks the source, output and expanded
+rotation dimensions against the configured decoded-image limit before rendering.
+
 Remember settings and Remember resize are intentionally separate. Adjustment
 memory can persist in `config.json`; resize carryover is limited to the current
 Adjust Board session. The selected resampling method is persistent.
@@ -655,6 +673,10 @@ moves temporary files to final names. This supports swaps and case-only renames.
 Windows sharing violations 32/33 are retried with bounded backoff. On failure,
 the worker attempts rollback.
 
+Bulk changes update the thumbnail grid in groups. Existing items keep their
+icons through a single model sort, and adjacent removed rows are deleted as a
+range. Selection and thumbnail refreshes are applied once per batch.
+
 Batch Convert runs in a `QThread`, supports PNG/JPEG/WebP output, optional
 rotate/flip, quality for JPEG/WebP, date preservation, and optional source
 deletion. The optional metadata-preserving WebP path stages each still image
@@ -663,6 +685,9 @@ before `os.replace`. It also decodes the staged pixels when source deletion
 is selected. Ordinary conversion also stages its output. GIF and animated WebP
 sources can be converted to animated WebP. The worker verifies the encoded
 frames, timing, and loop count before publishing the file.
+Convert and rotate check source dimensions against Maximum decoded image size
+before full pixel decoding. A file that exceeds the limit is reported as a
+failure and the batch continues.
 
 `utils/comfy_webp.py` writes the native ComfyUI `prompt:` and `workflow:`
 EXIF strings, preserving JSON number literals and escaping Unicode for TIFF ASCII.
@@ -933,6 +958,7 @@ These are the most important engineering constraints for future changes:
 | `test_startup_activation.py` | command-line file/folder activation and titles |
 | `test_browser_navigation.py` | folder switching with active thumbnail/preview decoders, arrow versus folder selection, Alt filename/digit cycling, filters, wrapping, shortcut/text-entry isolation, and address navigation buttons |
 | `test_thumbnail_filtering.py` | type filters, PDF boundary, video labels |
+| `test_thumbnail_decode_budget.py` | worker and memory limits across rapid folder switches, shared mosaic budgets, file-handle release, late results and window destruction |
 | `test_transfer_conflicts.py` | async preflight and conflict choices/naming |
 | `test_windows_shell.py` | Shell verbs, Send To, print, wallpaper, platform guards |
 

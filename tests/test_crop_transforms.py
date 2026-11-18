@@ -1,19 +1,64 @@
+import gc
 import os
 import tempfile
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtTest import QTest
+from PyQt6 import sip
+from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import QImage
+from PyQt6.QtTest import QSignalSpy, QTest
 from PyQt6.QtWidgets import QApplication, QMessageBox, QGraphicsRectItem
 
-from ui.crop_board import CropBoard
+from ui.crop_board import CropBoard, CropPrefetchService
 from ui.main_window import MainWindow
 from utils import file_ops
+
+
+class CropPrefetchDeliveryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_queued_results_follow_generation_and_shutdown(self):
+        service = CropPrefetchService({"crop_prefetch_workers": 1})
+        self.addCleanup(service.shutdown)
+        received = QSignalSpy(service.image_ready)
+        image = QImage(2, 2, QImage.Format.Format_RGB32)
+        worker = service.workers[0]
+        previous = service.request([])
+        worker.image_ready.emit(previous, "obsolete", (16, 1), image, 16)
+        current = service.request([])
+        worker.image_ready.emit(current, "current", (16, 2), image, 16)
+        self.assertEqual(len(received), 0)
+        self.app.processEvents()
+        self.assertEqual([result[1] for result in received], ["current"])
+        worker.image_ready.emit(current, "late", (16, 3), image, 16)
+        service.shutdown()
+        service.configure({"crop_prefetch_workers": 2})
+        self.app.processEvents()
+        self.assertEqual([result[1] for result in received], ["current"])
+        self.assertIsNone(service.task_queue)
+
+    def test_owner_deletion_stops_workers_and_discards_queued_delivery(self):
+        owner = QObject()
+        service = CropPrefetchService({"crop_prefetch_workers": 2}, owner)
+        queue = service.task_queue
+        received = QSignalSpy(service.image_ready)
+        service.workers[0].image_ready.emit(service.generation, "pending", (0, 0), QImage(), 0)
+        service_ref = weakref.ref(service)
+        sip.delete(owner)
+        self.assertFalse(queue.running)
+        del service
+        gc.collect()
+        self.app.processEvents()
+        self.assertIsNone(service_ref())
+        self.assertEqual(len(received), 0)
 
 
 class CropTransformTests(unittest.TestCase):
@@ -34,6 +79,7 @@ class CropTransformTests(unittest.TestCase):
 
     def tearDown(self):
         self.board.reject()
+        sip.delete(self.board)
         CropBoard._session_navigation_choice = None
         self.config_patch.stop()
         self.temp_dir.cleanup()
@@ -303,6 +349,7 @@ class CropTransformTests(unittest.TestCase):
         self.assertFalse(self.board.has_unsaved_changes())
 
         self.board.reject()
+        sip.delete(self.board)
         self.board = CropBoard(self.image_path)
         self.board.select_all()
         with patch("ui.crop_board.QFileDialog.getExistingDirectory", return_value=output) as choose:

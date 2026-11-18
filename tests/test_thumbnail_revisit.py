@@ -59,7 +59,7 @@ class ThumbnailRevisitTests(unittest.TestCase):
             QTest.qWait(10)
 
     def reads(self):
-        return [(Path(path), size) for (path, size), _ in self.decode.call_args_list]
+        return [(Path(call.args[0]), call.args[1]) for call in self.decode.call_args_list]
 
     def center_color(self, path):
         icon = self.view.item_for_path(str(path)).icon()
@@ -220,8 +220,8 @@ class ThumbnailRevisitTests(unittest.TestCase):
         read_old_pixels = Event()
         release_old_pixels = Event()
 
-        def hold_first_read(path, target_size):
-            result = _read_thumbnail_image(path, target_size)
+        def hold_first_read(path, target_size, queue):
+            result = _read_thumbnail_image(path, target_size, queue)
             if not read_old_pixels.is_set():
                 read_old_pixels.set()
                 release_old_pixels.wait(5)

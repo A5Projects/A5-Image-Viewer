@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,12 +10,28 @@ from PyQt6.QtWidgets import QApplication
 
 from main import startup_path_from_arguments
 from ui.main_window import MainWindow
+from utils import file_ops
 
 
 class StartupActivationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        config_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(config_dir.cleanup)
+        config = patch.object(file_ops, "CONFIG_FILE", os.path.join(config_dir.name, "config.json"))
+        config.start()
+        self.addCleanup(config.stop)
+
+    def test_closing_before_startup_cancels_delayed_folder_open(self):
+        with tempfile.TemporaryDirectory() as folder:
+            window = MainWindow(startup_path=folder)
+            with patch.object(window, "open_startup_path") as open_path:
+                window.close()
+                self.app.processEvents()
+                open_path.assert_not_called()
 
     def test_argument_parser_returns_first_existing_path(self):
         with tempfile.TemporaryDirectory() as folder:

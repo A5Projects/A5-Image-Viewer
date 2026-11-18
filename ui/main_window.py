@@ -1,5 +1,6 @@
 import os
 import sys
+from stat import S_ISDIR, S_ISREG
 from collections import deque, OrderedDict
 from datetime import datetime
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -7,10 +8,10 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QToolButton, QSizePolicy, QLabel, QStatusBar, QListWidgetItem, QCheckBox, QFileIconProvider,
                              QWidgetAction, QStyle, QFrame, QHeaderView)
 from PyQt6.QtGui import QFileSystemModel
-from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo, QModelIndex, QSignalBlocker, QStringListModel
+from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QEvent, QItemSelectionModel, QFileInfo, QModelIndex, QSignalBlocker, QStringListModel
 from ui.thumbnail_view import (ThumbnailView, PATH_ROLE, KIND_ROLE, EXT_ROLE, SIZE_ROLE,
                                MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, FINGERPRINT_ROLE,
-                               thumbnail_fingerprint, thumbnail_item_label)
+                               SORT_ORDER_ROLE, thumbnail_selection, thumbnail_fingerprint, thumbnail_item_label)
 from ui.gif_preview import GifPreviewViewer
 from ui.dialogs import CopyMoveDialog, RenameDialog
 from ui.folder_shortcuts import FolderShortcutList, ShrinkableButtonStrip
@@ -40,13 +41,6 @@ ICON_FILE = "A5ImageViewer.ico"
 EDITABLE_IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tif", ".tiff",
 }
-
-try:
-    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
-except Exception:
-    QAudioOutput = None
-    QMediaPlayer = None
-    QVideoSink = None
 
 
 class VideoFrameGrabber(QObject):
@@ -78,6 +72,11 @@ class VideoFrameGrabber(QObject):
         self.video_sink = None
         self.audio_output = None
 
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+        if not enabled:
+            self._release_backend()
+
     def grab(self, file_path):
         if not self.enabled or self._fingerprint(file_path) in self.failed_paths:
             self.failed.emit(file_path)
@@ -92,7 +91,11 @@ class VideoFrameGrabber(QObject):
 
     def set_thumbnail_queue(self, generation, paths):
         self.generation = generation
-        self.enabled = bool(paths)
+        if not self.enabled:
+            return
+        if not paths:
+            self._release_backend()
+            return
         self.thumbnail_paths = set(paths)
         self.pending_paths = set(paths)
         self.thumbnail_queue = deque(paths)
@@ -100,15 +103,11 @@ class VideoFrameGrabber(QObject):
         self.priority_paths.clear()
         self._cancel_current()
 
-        if not self.enabled:
-            self.shutdown()
-            return
         QTimer.singleShot(0, self._process_next)
 
     def prioritize(self, generation, paths):
-        if generation != self.generation or not paths:
+        if not self.enabled or generation != self.generation or not paths:
             return
-        self.enabled = True
         for path in paths:
             if path != self.current_path:
                 self.pending_paths.add(path)
@@ -133,7 +132,9 @@ class VideoFrameGrabber(QObject):
         QTimer.singleShot(0, self._process_next)
 
     def shutdown(self):
-        self.enabled = False
+        self.set_enabled(False)
+
+    def _release_backend(self):
         self.thumbnail_paths.clear()
         self.pending_paths.clear()
         self.thumbnail_queue.clear()
@@ -141,7 +142,6 @@ class VideoFrameGrabber(QObject):
         self.priority_paths.clear()
         self._cancel_current()
         if self.player is not None:
-            self.player.setSource(QUrl())
             self.player.deleteLater()
             self.player = None
         if self.video_sink is not None:
@@ -152,9 +152,13 @@ class VideoFrameGrabber(QObject):
             self.audio_output = None
 
     def _ensure_backend(self):
+        if not self.enabled:
+            return False
         if self.player is not None:
             return True
-        if not QMediaPlayer or not QVideoSink:
+        try:
+            from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
+        except ImportError:
             return False
 
         self.player = QMediaPlayer(self)
@@ -162,11 +166,10 @@ class VideoFrameGrabber(QObject):
         self.player.setVideoSink(self.video_sink)
         self.player.errorOccurred.connect(self.on_error)
         self.player.mediaStatusChanged.connect(self.on_media_status_changed)
-        if QAudioOutput:
-            self.audio_output = QAudioOutput(self)
-            self.audio_output.setMuted(True)
-            self.audio_output.setVolume(0)
-            self.player.setAudioOutput(self.audio_output)
+        self.audio_output = QAudioOutput(self)
+        self.audio_output.setMuted(True)
+        self.audio_output.setVolume(0)
+        self.player.setAudioOutput(self.audio_output)
         return True
 
     def _process_next(self):
@@ -223,9 +226,6 @@ class VideoFrameGrabber(QObject):
 
     def _cancel_current(self, requeue_thumbnail=False):
         self.timer.stop()
-        if self.player is not None:
-            self.player.stop()
-            self.player.setSource(QUrl())
         if requeue_thumbnail and self.current_path in self.thumbnail_paths:
             self.pending_paths.add(self.current_path)
             self.thumbnail_queue.appendleft(self.current_path)
@@ -233,11 +233,14 @@ class VideoFrameGrabber(QObject):
         self.current_purpose = None
         self._accept_frames = False
         self._request_token += 1
+        if self.player is not None:
+            self.player.stop()
+            self.player.setSource(QUrl())
 
     def on_media_status_changed(self, status):
-        if self.current_path and status in (
-            QMediaPlayer.MediaStatus.LoadedMedia,
-            QMediaPlayer.MediaStatus.BufferedMedia
+        if self.current_path and self.sender() is self.player and status in (
+            self.player.MediaStatus.LoadedMedia,
+            self.player.MediaStatus.BufferedMedia
         ):
             self._accept_frames = True
 
@@ -279,7 +282,7 @@ class VideoFrameGrabber(QObject):
 
     def on_error(self, error, error_string=""):
         path = self.current_path
-        if not path:
+        if not path or self.sender() is not self.player:
             return
         purpose = self.current_purpose
         self.failed_paths.add(self._fingerprint(path))
@@ -632,6 +635,8 @@ class MainWindow(QMainWindow):
             self.on_queued_transfer_finished
         )
         self.video_frame_grabber = VideoFrameGrabber(self)
+        self.show_videos_action.toggled.connect(self.video_frame_grabber.set_enabled)
+        self.browser_closed.connect(self.video_frame_grabber.shutdown)
         self.video_frame_grabber.frame_ready.connect(self.on_video_frame_ready)
         self.video_frame_grabber.thumbnail_ready.connect(self.on_video_thumbnail_ready)
         self.thumbnail_view.video_queue_changed.connect(self.video_frame_grabber.set_thumbnail_queue)
@@ -642,8 +647,9 @@ class MainWindow(QMainWindow):
         self.viewer_prefetch_cache = OrderedDict()
         self.viewer_prefetch_cache_bytes = 0
         self.crop_prefetch_service.image_ready.connect(self.on_viewer_prefetch_ready)
+        self.browser_closed.connect(self.crop_prefetch_service.shutdown)
         self.browser_closed.connect(self.preview_viewer.shutdown_gif_playback)
-        self.browser_closed.connect(self.thumbnail_view.shutdown_gif_playback)
+        self.browser_closed.connect(self.thumbnail_view.shutdown)
         QApplication.instance().aboutToQuit.connect(self.preview_viewer.shutdown_gif_playback)
         QApplication.instance().aboutToQuit.connect(self.thumbnail_view.shutdown)
         QApplication.instance().aboutToQuit.connect(self.crop_prefetch_service.shutdown)
@@ -753,12 +759,11 @@ class MainWindow(QMainWindow):
         self.thumbnail_view.installEventFilter(self)
         self.thumbnail_view.viewport().installEventFilter(self)
         self.tree_view.viewport().installEventFilter(self)
-        if self.startup_path:
-            QTimer.singleShot(
-                0, lambda path=self.startup_path: self.open_startup_path(path)
-            )
-        else:
-            QTimer.singleShot(0, self.restore_last_folder)
+        startup_timer = QTimer(self)
+        startup_timer.setSingleShot(True)
+        startup_timer.timeout.connect(self.open_initial_folder)
+        self.browser_closed.connect(startup_timer.stop)
+        startup_timer.start(0)
 
     def resource_path(self, filename):
         candidates = [
@@ -1008,17 +1013,19 @@ class MainWindow(QMainWindow):
         return ""
 
     def load_address_history(self):
-        folders = get_address_folders()
-        self.unavailable_address_paths = {os.path.normcase(path) for path in folders if not os.path.isdir(path)}
-        self.show_address_history(folders, self.current_folder_path)
+        self.show_address_history(get_address_folders(), self.current_folder_path)
 
     def show_address_history(self, folders, current_path):
-        if self.unavailable_address_paths:
-            folders = [path for path in folders if os.path.normcase(path) not in self.unavailable_address_paths]
         with QSignalBlocker(self.address_bar):
             self.address_history_model.setStringList(folders)
             if current_path:
                 self.address_bar.setCurrentText(os.path.normpath(current_path))
+
+    def open_initial_folder(self):
+        if self.startup_path:
+            self.open_startup_path(self.startup_path)
+        else:
+            self.restore_last_folder()
 
     def restore_last_folder(self):
         if get_startup_behavior() != "last_used":
@@ -1055,7 +1062,6 @@ class MainWindow(QMainWindow):
             return
 
         folders = add_address_folder(folder_path)
-        self.unavailable_address_paths.discard(os.path.normcase(folder_path))
         self.show_address_history(folders, folder_path)
         set_last_folder(folder_path)
 
@@ -1677,9 +1683,11 @@ class MainWindow(QMainWindow):
 
     def navigate_to_folder(self, folder_path, add_to_history=True):
         if not os.path.isdir(folder_path):
-            return
+            return False
 
         idx = self.file_model.index(folder_path)
+        if not idx.isValid():
+            return False
         self._navigating_history = not add_to_history
         previous_index = self.tree_view.currentIndex()
         self.tree_view.setCurrentIndex(idx)
@@ -1687,18 +1695,18 @@ class MainWindow(QMainWindow):
         if previous_index == idx:
             self.on_folder_selected(idx)
         self._navigating_history = False
+        return True
 
     def on_address_entered(self):
         path = self.address_bar.currentText()
-        if os.path.exists(path) and os.path.isdir(path):
-            self.navigate_to_folder(path)
-        else:
-            QMessageBox.warning(self, "Invalid Path", "The specified folder does not exist.")
+        if not self.navigate_to_folder(path):
+            QMessageBox.warning(self, "Folder unavailable", f"Could not open the folder:\n{path}")
             
     def on_address_selected(self, index):
         path = self.address_bar.itemText(index)
-        if os.path.exists(path) and os.path.isdir(path):
-            self.navigate_to_folder(path)
+        if not self.navigate_to_folder(path):
+            self.address_bar.setEditText(os.path.normpath(self.current_folder_path) if self.current_folder_path else "")
+            QMessageBox.warning(self, "Folder unavailable", f"Could not open the folder:\n{path}")
 
     def on_folder_selected(self, index):
         folder_path = self.file_model.filePath(index)
@@ -1754,6 +1762,8 @@ class MainWindow(QMainWindow):
     def on_show_options_changed(self, checked=None):
         self.show_images = self.show_images_action.isChecked()
         self.show_pdfs = self.show_pdfs_action.isChecked()
+        if self.show_videos and not self.show_videos_action.isChecked() and self.current_item_kind == "video":
+            self.preview_viewer.clear_image()
         self.show_videos = self.show_videos_action.isChecked()
         self.show_text = self.show_text_action.isChecked()
         self.show_folders = self.show_folders_action.isChecked()
@@ -2459,6 +2469,7 @@ class MainWindow(QMainWindow):
     def restart_video_thumbnail_queue(self):
         if not self.show_videos:
             return
+        self.video_frame_grabber.set_enabled(True)
         video_paths = [
             record[0] for record in self.thumbnail_view.files
             if record[4] == "video" and os.path.isfile(record[0])
@@ -2477,12 +2488,13 @@ class MainWindow(QMainWindow):
         self.preview_viewer.set_pixmap(icon.pixmap(300, 300))
 
     def on_video_frame_ready(self, file_path, image):
-        if self.current_image_path != file_path or self.current_item_kind != "video":
+        if not self.show_videos or self.current_image_path != file_path or self.current_item_kind != "video":
             return
         self.preview_viewer.set_pixmap(QPixmap.fromImage(image))
 
     def on_video_thumbnail_ready(self, generation, file_path, image):
-        self.thumbnail_view.update_video_thumbnail(generation, file_path, image)
+        if self.show_videos:
+            self.thumbnail_view.update_video_thumbnail(generation, file_path, image)
 
     def load_prefetched_preview(self, file_path):
         image = self.take_viewer_prefetch(file_path)
@@ -2517,6 +2529,7 @@ class MainWindow(QMainWindow):
                     paths.append(path)
         self.viewer_prefetch_generation = self.crop_prefetch_service.request(paths)
 
+    @pyqtSlot(int, str, object, object, int)
     def on_viewer_prefetch_ready(self, generation, path, fingerprint, image, cost):
         if generation != self.viewer_prefetch_generation or image.isNull():
             return
@@ -2746,7 +2759,7 @@ class MainWindow(QMainWindow):
         item.setData(stat.st_mtime, MODIFIED_ROLE)
         item.setData(thumbnail_fingerprint(stat), FINGERPRINT_ROLE)
 
-    def update_saved_thumbnail_item(self, file_path, request_refresh=True):
+    def update_saved_thumbnail_item(self, file_path):
         item = self.thumbnail_view.item_for_path(file_path)
         if item is None:
             self.thumbnail_view.thumbnail_history.discard(file_path)
@@ -2757,14 +2770,12 @@ class MainWindow(QMainWindow):
         ext = ext[1:].lower()
         item.setData(ext, EXT_ROLE)
         self.update_thumbnail_file_stats(item, file_path)
-        if request_refresh:
-            self.thumbnail_view.request_thumbnail_refresh(file_path)
+        self.thumbnail_view.request_thumbnail_refresh(file_path)
         self.update_status_bar()
 
     def restore_thumbnail_selection(self, paths, current_path=None):
         selection_model = self.thumbnail_view.selectionModel()
         with QSignalBlocker(selection_model):
-            selection_model.clearSelection()
             valid_indexes = []
             for path in paths:
                 item = self.thumbnail_view.item_for_path(path)
@@ -2773,8 +2784,8 @@ class MainWindow(QMainWindow):
                 index = self.thumbnail_view.model().indexFromItem(item)
                 if not index.isValid():
                     continue
-                selection_model.select(index, QItemSelectionModel.SelectionFlag.Select)
                 valid_indexes.append(index)
+            selection_model.select(thumbnail_selection(valid_indexes), QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
             current_item = self.thumbnail_view.item_for_path(current_path) if current_path else None
             current_hidden = current_item is not None and self.thumbnail_view.isRowHidden(current_item.row())
@@ -2790,83 +2801,106 @@ class MainWindow(QMainWindow):
             self.thumbnail_view.prioritize_rows_around(current_index.row())
         self.update_status_bar()
 
-    def reposition_thumbnail_items(self, paths):
+    def sort_thumbnail_items(self):
+        """Reorder existing items in one Qt layout change, preserving their indexes and icons."""
         model = self.thumbnail_view.model()
-        items = []
-        for path in paths:
-            item = self.thumbnail_view.item_for_path(path)
-            if item is not None:
-                items.append(item)
-        if not items:
+        folders, files = [], []
+        for row in range(model.rowCount()):
+            item = model.item(row)
+            group = folders if item.data(KIND_ROLE) == "folder" else files
+            group.append((self.thumbnail_sort_key(item), row, item))
+        folders.sort(key=lambda entry: entry[0])
+        files.sort(key=lambda entry: entry[0], reverse=self.sort_reverse)
+        ordered = folders + files
+        if all(rank == entry[1] for rank, entry in enumerate(ordered)):
             return
-
-        self.thumbnail_view.setUpdatesEnabled(False)
-        try:
-            for row in sorted((item.row() for item in items), reverse=True):
-                model.takeRow(row)
-            for item in items:
-                model.insertRow(self.insertion_row_for_thumbnail_item(item), item)
-        finally:
-            self.thumbnail_view.setUpdatesEnabled(True)
+        # Only the numeric sort role is private. Qt emits its usual layout signals below.
+        with QSignalBlocker(model):
+            for rank, (_, _, item) in enumerate(ordered):
+                item.setData(rank, SORT_ORDER_ROLE)
+        model.setSortRole(SORT_ORDER_ROLE)
+        model.sort(0)
 
     def add_thumbnail_paths(self, paths, keep_selection_path=None):
         added_paths = []
-        new_image_paths = []
+        refresh_paths = []
         new_video_paths = []
+        new_items = []
+        image_formats = self.thumbnail_view._supported_image_formats()
         for file_path in paths:
-            if self.row_for_path(file_path) is not None:
-                self.update_saved_thumbnail_item(file_path)
+            item = self.thumbnail_view.item_for_path(file_path)
+            if item is not None:
+                self.update_thumbnail_file_stats(item, file_path)
+                refresh_paths.append(file_path)
                 added_paths.append(file_path)
                 continue
 
-            item = self.create_thumbnail_item(file_path)
+            item = self.create_thumbnail_item(file_path, image_formats)
             if item is None:
                 continue
-            row = self.insertion_row_for_thumbnail_item(item)
-            self.thumbnail_view.model().insertRow(row, item)
             self.thumbnail_view.register_item(item)
+            new_items.append(item)
             added_paths.append(file_path)
             if item.data(KIND_ROLE) == "image":
-                new_image_paths.append(file_path)
+                refresh_paths.append(file_path)
             elif item.data(KIND_ROLE) == "video":
                 new_video_paths.append(file_path)
 
         if added_paths:
+            model = self.thumbnail_view.model()
+            if len(new_items) == 1 and len(added_paths) == 1:
+                item = new_items[0]
+                model.insertRow(self.insertion_row_for_thumbnail_item(item), item)
+            else:
+                if new_items:
+                    model.invisibleRootItem().appendRows(new_items)
+                if new_items or self.sort_key == "date":
+                    self.sort_thumbnail_items()
             self.thumbnail_view.apply_filter()
             self.thumbnail_view.sync_worker_records()
-            for file_path in new_image_paths:
-                self.update_saved_thumbnail_item(file_path)
+            self.thumbnail_view.request_thumbnail_refreshes(refresh_paths)
             self.thumbnail_view.request_video_thumbnails(new_video_paths)
-        if keep_selection_path and self.row_for_path(keep_selection_path) is not None:
+        keep_row = self.row_for_path(keep_selection_path) if keep_selection_path else None
+        if keep_row is not None and not self.thumbnail_view.isRowHidden(keep_row):
             self.select_image_by_path(keep_selection_path)
         elif added_paths:
             self.select_image_by_path(added_paths[0])
         self.update_status_bar()
 
     def remove_thumbnail_paths(self, paths, keep_selection_path=None):
-        model = self.thumbnail_view.model()
-        rows = []
-        removed_set = set(paths)
+        view = self.thumbnail_view
+        model = view.model()
+        items = {}
         for path in paths:
-            row = self.row_for_path(path)
-            if row is not None:
-                rows.append(row)
-        if not rows:
+            item = view.item_for_path(path)
+            if item is not None:
+                items[item.row()] = item
+        if not items:
             return
 
-        first_removed_row = min(rows)
-        for row in sorted(rows, reverse=True):
-            item = model.item(row)
-            if item is not None:
-                self.thumbnail_view.unregister_path(item.data(PATH_ROLE))
-            model.removeRow(row)
-        self.thumbnail_view.apply_filter()
-        self.thumbnail_view.sync_worker_records()
+        removed_current_path = self.row_for_path(self.current_image_path) in items
+        removed_current_index = view.currentIndex().row() in items
+        rows = sorted(items)
+        view.unregister_items(items.values())
+        selection = view.selectionModel()
+        with QSignalBlocker(selection):
+            end = rows[-1]
+            for index in range(len(rows) - 1, -1, -1):
+                row = rows[index]
+                if index == 0 or row - 1 != rows[index - 1]:
+                    model.removeRows(row, end - row + 1)
+                    if index:
+                        end = rows[index - 1]
+            if removed_current_index:
+                selection.setCurrentIndex(QModelIndex(), QItemSelectionModel.SelectionFlag.NoUpdate)
+        view.apply_filter()
+        view.sync_worker_records()
 
-        if keep_selection_path and self.row_for_path(keep_selection_path) is not None:
+        keep_row = self.row_for_path(keep_selection_path) if keep_selection_path else None
+        if keep_row is not None and not view.isRowHidden(keep_row):
             self.select_image_by_path(keep_selection_path)
-        elif self.current_image_path in removed_set:
-            self.select_nearby_thumbnail(first_removed_row)
+        elif removed_current_path or removed_current_index:
+            self.select_nearby_thumbnail(rows[0])
         else:
             self.update_status_bar()
 
@@ -2894,11 +2928,8 @@ class MainWindow(QMainWindow):
         self.preview_viewer.clear_image()
         self.update_status_bar()
 
-    def create_thumbnail_item(self, file_path):
-        if not os.path.exists(file_path):
-            return None
-
-        record = self.thumbnail_record_for_path(file_path)
+    def create_thumbnail_item(self, file_path, image_formats):
+        record = self.thumbnail_record_for_path(file_path, image_formats)
         if record is None:
             return None
 
@@ -2915,14 +2946,18 @@ class MainWindow(QMainWindow):
         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         return item
 
-    def thumbnail_record_for_path(self, file_path):
+    def thumbnail_record_for_path(self, file_path, image_formats):
+        try:
+            stat = os.stat(file_path)
+        except OSError:
+            return None
         file_name = os.path.basename(file_path)
-        if os.path.isdir(file_path):
+        if S_ISDIR(stat.st_mode):
             if not self.show_folders:
                 return None
             ext = ""
             kind = "folder"
-        elif os.path.isfile(file_path):
+        elif S_ISREG(stat.st_mode):
             _, ext = os.path.splitext(file_name)
             ext = ext[1:].lower()
             if ext == "pdf" and self.show_pdfs:
@@ -2931,7 +2966,7 @@ class MainWindow(QMainWindow):
                 kind = "text"
             elif (
                 ext != "pdf" and
-                ext in self.thumbnail_view._supported_image_formats() and
+                ext in image_formats and
                 self.show_images
             ):
                 kind = "image"
@@ -2942,16 +2977,7 @@ class MainWindow(QMainWindow):
         else:
             return None
 
-        try:
-            stat = os.stat(file_path)
-            modified_time = stat.st_mtime
-            file_size = stat.st_size
-            fingerprint = thumbnail_fingerprint(stat)
-        except OSError:
-            modified_time = 0
-            file_size = 0
-            fingerprint = None
-        return (file_path, file_name, ext, modified_time, kind, file_size, fingerprint)
+        return (file_path, file_name, ext, stat.st_mtime, kind, stat.st_size, thumbnail_fingerprint(stat))
 
     def insertion_row_for_thumbnail_item(self, new_item):
         model = self.thumbnail_view.model()
@@ -2969,22 +2995,19 @@ class MainWindow(QMainWindow):
         if left_kind != "folder" and right_kind == "folder":
             return False
 
-        left_name = os.path.basename(left.data(PATH_ROLE) or "").lower()
-        right_name = os.path.basename(right.data(PATH_ROLE) or "").lower()
-        if left_kind == "folder" and right_kind == "folder":
-            return left_name < right_name
+        left_key = self.thumbnail_sort_key(left)
+        right_key = self.thumbnail_sort_key(right)
+        return left_key > right_key if self.sort_reverse and left_kind != "folder" else left_key < right_key
 
+    def thumbnail_sort_key(self, item):
+        name = os.path.basename(item.data(PATH_ROLE) or "").lower()
+        if item.data(KIND_ROLE) == "folder":
+            return name
         if self.sort_key == "date":
-            left_key = (left.data(MODIFIED_ROLE) or 0, left_name)
-            right_key = (right.data(MODIFIED_ROLE) or 0, right_name)
-        elif self.sort_key == "type":
-            left_key = ((left.data(EXT_ROLE) or ""), left_name)
-            right_key = ((right.data(EXT_ROLE) or ""), right_name)
-        else:
-            left_key = left_name
-            right_key = right_name
-
-        return left_key > right_key if self.sort_reverse else left_key < right_key
+            return (item.data(MODIFIED_ROLE) or 0, name)
+        if self.sort_key == "type":
+            return (item.data(EXT_ROLE) or "", name)
+        return name
             
     def open_adjust_board(self, parent_override=None):
         if (
@@ -3099,16 +3122,17 @@ class MainWindow(QMainWindow):
         current_path = self.current_image_path
         self.clear_viewer_prefetch()
         for file_path in successful:
-            self.update_saved_thumbnail_item(file_path, request_refresh=False)
+            item = self.thumbnail_view.item_for_path(file_path)
+            if item is not None:
+                self.update_thumbnail_file_stats(item, file_path)
 
         if self.sort_key == "date":
-            self.reposition_thumbnail_items(successful)
+            self.sort_thumbnail_items()
             self.thumbnail_view.apply_filter()
             self.thumbnail_view.sync_worker_records()
 
         self.restore_thumbnail_selection(selected_paths, current_path=current_path)
-        for file_path in successful:
-            self.thumbnail_view.request_thumbnail_refresh(file_path)
+        self.thumbnail_view.request_thumbnail_refreshes(successful)
 
         if current_path in successful:
             self.image_modified = False
@@ -3229,13 +3253,7 @@ class MainWindow(QMainWindow):
             if item is not None:
                 items[old_path] = item
 
-        model = self.thumbnail_view.model()
-        self.thumbnail_view.selectionModel().blockSignals(True)
-        self.thumbnail_view.setUpdatesEnabled(False)
-        try:
-            for row in sorted((item.row() for item in items.values()), reverse=True):
-                model.takeRow(row)
-
+        with QSignalBlocker(self.thumbnail_view.selectionModel()):
             for old_path, item in items.items():
                 new_path = changed_mapping[old_path]
                 new_name = os.path.basename(new_path)
@@ -3255,11 +3273,7 @@ class MainWindow(QMainWindow):
                 ))
 
             self.thumbnail_view.rename_indexed_paths(changed_mapping, items)
-            for item in items.values():
-                model.insertRow(self.insertion_row_for_thumbnail_item(item), item)
-        finally:
-            self.thumbnail_view.setUpdatesEnabled(True)
-            self.thumbnail_view.selectionModel().blockSignals(False)
+            self.sort_thumbnail_items()
 
         self.thumbnail_view.apply_filter()
         self.thumbnail_view.sync_worker_records()
@@ -3493,6 +3507,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         super().closeEvent(event)
         if event.isAccepted():
+            self._show_options_dirty = False
             self.browser_closed.emit()
 
     def open_settings_dialog(self):

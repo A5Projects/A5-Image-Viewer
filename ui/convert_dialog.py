@@ -5,7 +5,11 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from utils.animated_webp import save_animated_webp
 from utils.atomic_output import staged_output
-from utils.file_ops import get_format_quality, set_format_quality, get_convert_appendix, set_convert_appendix
+from utils.file_ops import (
+    get_convert_appendix, get_format_quality, get_image_settings,
+    set_convert_appendix, set_format_quality,
+)
+from utils.image_loading import open_limited_pil_image
 from utils.comfy_webp import webp_metadata, save_verified_webp
 from PIL import Image
 
@@ -58,6 +62,7 @@ class ConvertWorker(QThread):
         self.keep_date = keep_date
         self.delete_orig = delete_orig
         self.keep_comfy = bool(keep_comfy and format_str == "WebP")
+        self.decoded_limit_mb = get_image_settings()["max_decoded_image_mb"]
         self.changed_paths = []
         self._is_running = True
 
@@ -107,7 +112,7 @@ class ConvertWorker(QThread):
 
     def convert_file(self, file_path, new_path):
         if self.keep_comfy:
-            with Image.open(file_path) as opened:
+            with open_limited_pil_image(file_path, self.decoded_limit_mb) as opened:
                 if getattr(opened, "n_frames", 1) != 1:
                     raise ValueError("The metadata-preserving WebP conversion requires a single-frame image.")
                 options, tags = webp_metadata(opened)
@@ -118,7 +123,7 @@ class ConvertWorker(QThread):
             return
 
         with staged_output(new_path) as temp_path:
-            with Image.open(file_path) as opened:
+            with open_limited_pil_image(file_path, self.decoded_limit_mb) as opened:
                 output_format = (self.format_str or Image.registered_extensions().get(
                     os.path.splitext(new_path)[1].lower(), ""
                 )).upper()
@@ -129,7 +134,9 @@ class ConvertWorker(QThread):
                             "Batch Convert supports animated GIF or WebP to WebP."
                         )
                     transform = self.apply_rotation if self.rotate_op else None
-                    save_animated_webp(opened, temp_path, self.quality, transform)
+                    save_animated_webp(
+                        opened, temp_path, self.quality, transform, limit_mb=self.decoded_limit_mb,
+                    )
                     return
                 img = self.apply_rotation(opened.copy())
                 exif = opened.info.get("exif")

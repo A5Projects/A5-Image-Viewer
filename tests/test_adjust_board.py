@@ -59,6 +59,54 @@ class AdjustBoardTests(unittest.TestCase):
         self.assertEqual(self.board.value_inputs["Gamma"].value(), 1.0)
         self.assertFalse(self.board.effect_checks["Invert"].isChecked())
 
+    def test_fill_samples_only_the_centered_region_for_opposite_aspect_ratios(self):
+        self.board.geometry_combo.setCurrentIndex(self.board.geometry_combo.findData("fill"))
+        self.board.resample_combo.setCurrentIndex(self.board.resample_combo.findData("nearest"))
+        image = Image.new("RGB", (128, 16))
+        for x in range(image.width):
+            image.paste((x, x, x), (x, 0, x + 1, image.height))
+        expected = image.resize((1024, 128), Image.Resampling.NEAREST).crop((504, 0, 520, 128))
+        with patch.object(image, "resize", wraps=image.resize) as resize:
+            result = self.board.render_resized_image(image, (16, 128))
+        self.assertEqual(result.tobytes(), expected.tobytes())
+        self.assertEqual(resize.call_args.args[0], (16, 128))
+        self.assertEqual(resize.call_args.kwargs["box"], (63, 0, 65, 16))
+
+    def test_stretch_shrinks_vertically_first_only_for_an_oversized_work_image(self):
+        self.board.geometry_combo.setCurrentIndex(self.board.geometry_combo.findData("stretch"))
+        with Image.new("RGB", (128, 512)) as image:
+            for limit, expected_first_size in ((1, (128, 128)), (2, (768, 128))):
+                with self.subTest(limit=limit), patch.object(image, "resize", wraps=image.resize) as resize:
+                    result = self.board.render_resized_image(image, (768, 128), limit_mb=limit)
+                    self.assertEqual(result.size, (768, 128))
+                    self.assertEqual(resize.call_args.args[0], expected_first_size)
+
+    def test_output_and_rotation_limits_are_checked_before_rendering_or_overwriting(self):
+        self.board.geometry_combo.setCurrentIndex(self.board.geometry_combo.findData("stretch"))
+        destination = Path(self.temp_dir.name) / "existing.png"
+        destination.write_bytes(b"existing destination")
+        with (patch("ui.adjust_board.get_image_settings", return_value={"max_decoded_image_mb": 1}),
+              patch.object(self.board, "apply_adjustments") as adjustments,
+              patch("ui.adjust_board.QMessageBox.critical") as error):
+            for width, height, angle in ((513, 512, 0), (500, 500, 45)):
+                with self.subTest(width=width, height=height, angle=angle):
+                    self.board.spin_width.setValue(width)
+                    self.board.spin_height.setValue(height)
+                    self.board.rotation_degrees = angle
+                    self.assertFalse(self.board.save_result_to_path(str(destination)))
+                    self.assertIn("1 MiB", error.call_args.args[-1])
+                    adjustments.assert_not_called()
+                    self.assertEqual(destination.read_bytes(), b"existing destination")
+
+    def test_fit_checks_actual_output_and_right_angle_rotation_preserves_size_budget(self):
+        self.board.geometry_combo.setCurrentIndex(self.board.geometry_combo.findData("fit"))
+        self.board.spin_width.setValue(480)
+        self.board.spin_height.setValue(10_000)
+        self.board.rotation_degrees = 90
+        with patch("ui.adjust_board.get_image_settings", return_value={"max_decoded_image_mb": 1}):
+            result = self.board.render_final_image()
+        self.assertEqual(result.size, (360, 480))
+
     def test_rotation_preview_and_saved_full_resolution_use_same_orientation(self):
         self.board.rotation_input.setValue(27.25)
         self.board.btn_rotate.click()

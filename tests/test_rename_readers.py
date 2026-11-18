@@ -51,10 +51,10 @@ class RenameReaderTests(unittest.TestCase):
             real_rename = os.rename
             gui_thread = get_ident()
 
-            def held_reader(path, size):
+            def held_reader(path, size, queue):
                 reader_paths.append(path)
                 if path != str(source) or opened.is_set():
-                    return _read_thumbnail_image(path, size)
+                    return _read_thumbnail_image(path, size, queue)
                 reader = QImageReader(path)
                 try:
                     if not reader.canRead():
