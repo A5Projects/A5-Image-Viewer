@@ -1,11 +1,12 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from PyQt6.QtCore import QEvent, Qt, QTimer
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtTest import QTest
@@ -22,6 +23,7 @@ class AdjustBoardTests(unittest.TestCase):
 
     def setUp(self):
         AdjustBoard._session_navigation_choice = None
+        AdjustBoard._session_close_choice = None
         self.original_config_file = file_ops.CONFIG_FILE
         self.temp_dir = tempfile.TemporaryDirectory()
         file_ops.CONFIG_FILE = os.path.join(self.temp_dir.name, "config.json")
@@ -35,8 +37,10 @@ class AdjustBoardTests(unittest.TestCase):
         )
 
     def tearDown(self):
+        AdjustBoard._session_close_choice = "discard"
         self.board.close()
         AdjustBoard._session_navigation_choice = None
+        AdjustBoard._session_close_choice = None
         file_ops.CONFIG_FILE = self.original_config_file
         self.temp_dir.cleanup()
 
@@ -417,6 +421,108 @@ class AdjustBoardTests(unittest.TestCase):
 
         self.board.sliders["Brightness"].setValue(20)
         self.assertTrue(self.board.confirm_navigation())
+
+    def test_save_as_existing_jpeg_composites_alpha_over_white(self):
+        destination = Path(self.temp_dir.name, "existing.jpg")
+        Image.new("RGB", (1, 1), "red").save(destination)
+        with patch("ui.adjust_board.QFileDialog.getSaveFileName", return_value=(str(destination), "")):
+            self.assertTrue(self.board.save_to_file())
+        with Image.open(destination) as saved:
+            self.assertEqual((saved.format, saved.size), ("JPEG", (8, 6)))
+            for actual, expected in zip(saved.getpixel((0, 0)), (179, 186, 193)):
+                self.assertAlmostEqual(actual, expected, delta=3)
+
+    def test_failed_encode_keeps_existing_destination_and_edits(self):
+        destination = Path(self.second_path)
+        before = destination.read_bytes()
+        original_files = set(destination.parent.iterdir())
+        self.board.sliders["Contrast"].setValue(10)
+        saved_paths = []
+        self.board.image_saved.connect(saved_paths.append)
+
+        def partial_write(image, path, **options):
+            Path(path).write_bytes(b"incomplete")
+            raise OSError("Simulated write failure")
+
+        with patch.object(Image.Image, "save", partial_write), patch("ui.adjust_board.QMessageBox.critical"):
+            self.assertFalse(self.board.save_result_to_path(str(destination)))
+        self.assertEqual(destination.read_bytes(), before)
+        self.assertEqual(set(destination.parent.iterdir()), original_files)
+        self.assertEqual(saved_paths, [])
+        self.assertFalse(self.board.saved_any)
+        self.assertTrue(self.board.has_unsaved_changes())
+
+    def test_adjusted_png_preserves_displayed_source_text_and_language(self):
+        workflow = '{"title":"雪🎨","extra":"' + "x" * 1_100_000 + '"}'
+        prompt = '{"seed":18446744073709551615}'
+        info = PngImagePlugin.PngInfo()
+        info.add_itxt("workflow", workflow, lang="ja", tkey="ワークフロー")
+        info.add_text("prompt", prompt, zip=True)
+        info.add_text("Description", "café")
+        Image.new("RGB", (12, 4), "blue").save(self.second_path, pnginfo=info)
+        self.assertTrue(self.board.load_image(self.second_path))
+        self.board.sliders["Brightness"].setValue(10)
+        # A new disk version must not supply metadata for the already-displayed pixels.
+        Image.new("RGB", (3, 3), "red").save(self.second_path)
+        self.assertTrue(self.board.save_result_to_path(self.second_path))
+        with Image.open(self.second_path) as result:
+            self.assertEqual(result.size, (12, 4))
+            self.assertEqual(result.text, {"workflow": workflow, "prompt": prompt, "Description": "café"})
+            self.assertEqual((result.text["workflow"].lang, result.text["workflow"].tkey), ("ja", "ワークフロー"))
+
+        self.assertTrue(self.board.load_image(self.image_path))
+        self.assertTrue(self.board.save_result_to_path(self.second_path))
+        with Image.open(self.second_path) as result:
+            self.assertFalse(result.text)
+
+    def test_window_close_escape_and_close_button_confirm_dirty_edits(self):
+        self.board.show()
+        self.board.sliders["Brightness"].setValue(10)
+        AdjustBoard._session_navigation_choice = "discard"
+        observed = []
+
+        def answer(key, remember=False):
+            msg = QApplication.activeModalWidget()
+            if isinstance(msg, QMessageBox):
+                observed.append(msg.text())
+                msg.checkBox().setChecked(remember)
+                QTest.keyClick(msg, key)
+
+        for close in (self.board.close, lambda: QTest.keyClick(self.board, Qt.Key.Key_Escape), self.board.btn_cancel.click):
+            QTimer.singleShot(0, lambda: answer(Qt.Key.Key_C, remember=True))
+            close()
+            self.assertTrue(self.board.isVisible())
+            self.assertTrue(self.board.has_unsaved_changes())
+            self.assertIsNone(AdjustBoard._session_close_choice)
+        QTimer.singleShot(0, lambda: answer(Qt.Key.Key_D, remember=True))
+        self.board.close()
+        self.assertFalse(self.board.isVisible())
+        self.assertEqual(len(observed), 4)
+        self.assertTrue(all("closing" in message for message in observed))
+        self.assertEqual(AdjustBoard._session_close_choice, "discard")
+
+    def test_close_waits_for_successful_save_and_only_remembers_success(self):
+        self.board.show()
+        self.board.sliders["Brightness"].setValue(10)
+        self.board.check_auto_name.setChecked(True)
+
+        def choose_save():
+            msg = QApplication.activeModalWidget()
+            if isinstance(msg, QMessageBox):
+                msg.checkBox().setChecked(True)
+                QTest.keyClick(msg, Qt.Key.Key_S)
+
+        with patch.object(self.board, "apply_and_save", return_value=False):
+            QTimer.singleShot(0, choose_save)
+            self.board.close()
+        self.assertTrue(self.board.isVisible())
+        self.assertIsNone(AdjustBoard._session_close_choice)
+        QTimer.singleShot(0, choose_save)
+        self.board.close()
+        self.assertFalse(self.board.isVisible())
+        self.assertTrue(Path(self.temp_dir.name, "image_adj.png").is_file())
+        self.assertEqual(AdjustBoard._session_close_choice, "save")
+        self.assertIsNone(AdjustBoard._session_navigation_choice)
 
     def test_enter_does_not_save_and_o_invokes_save(self):
         enter_event = QKeyEvent(

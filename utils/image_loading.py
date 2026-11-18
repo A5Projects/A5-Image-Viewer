@@ -63,7 +63,7 @@ def read_full_image(path):
         reader.setFileName("")
 
 
-def read_pil_image(path):
+def read_pil_image(path, *, png_text=None):
     limit = apply_image_loading_settings()
     # Qt can inspect the header without triggering Pillow's pixel guard first.
     reader = QImageReader(path)
@@ -76,9 +76,11 @@ def read_pil_image(path):
     try:
         with Image.open(path) as image:
             check_image_size(image.width, image.height, limit)
-            mode = "RGBA" if (image.mode in ("RGBA", "LA") or
-                              (image.mode == "P" and "transparency" in image.info)) else "RGB"
-            return image.convert(mode)
+            mode = "RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB"
+            pixels = image.convert(mode)
+            if png_text is not None and image.format == "PNG":
+                png_text.update(image.text)
+            return pixels
     except Image.DecompressionBombError as error:
         raise ImageLoadError(
             f"This image exceeds the {limit:,} MiB decoded-image limit. "

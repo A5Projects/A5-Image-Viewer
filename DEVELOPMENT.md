@@ -631,6 +631,10 @@ Copy saves mark the current edit signature as saved but keep the original as
 the navigation item. A copy added to the displayed folder is inserted into the
 thumbnail model but not into the active Adjust Board navigation snapshot.
 
+Image Adjust stages saves next to the destination. PNG output carries the
+source PNG's text fields. Closing with unsaved edits uses Save/Discard/Cancel
+and a process-local close preference separate from the navigation preference.
+
 ### Batch rename and convert
 
 Batch rename templates use:
@@ -649,7 +653,9 @@ rotate/flip, quality for JPEG/WebP, date preservation, and optional source
 deletion. The optional metadata-preserving WebP path stages each still image
 beside its destination and verifies its EXIF fields and compact XMP payload
 before `os.replace`. It also decodes the staged pixels when source deletion
-is selected. Other conversion modes retain the existing direct-save behavior.
+is selected. Ordinary conversion also stages its output. GIF and animated WebP
+sources can be converted to animated WebP. The worker verifies the encoded
+frames, timing, and loop count before publishing the file.
 
 `utils/comfy_webp.py` writes the native ComfyUI `prompt:` and `workflow:`
 EXIF strings, preserving JSON number literals and escaping Unicode for TIFF ASCII.
@@ -827,7 +833,7 @@ Session-only choices must remain non-persistent unless intentionally changed:
 
 - main edit prompt auto-save choice
 - Crop Board navigation save/discard choice
-- Adjust Board navigation save/discard choice
+- Adjust Board navigation and close save/discard choices
 - Convert overwrite-warning suppression
 - Adjust Board Remember resize state
 
@@ -991,9 +997,10 @@ Medium Dark, and Light themes.
 - Video support depends on the installed Qt Multimedia/platform codecs.
 - Animated/multi-frame editing is limited; batch transform refuses it, while
   simpler editor paths may flatten to a single frame.
-- Metadata preservation differs between save paths. Batch rotate is the most
-  deliberate; QPixmap saves and Adjust/Crop/Convert do not promise complete
-  metadata round-tripping.
+- Metadata preservation depends on the operation and output format. Image
+  Adjust preserves PNG text on PNG output. The metadata-preserving WebP
+  conversion verifies the graph and compact summary it writes. Crop Board's
+  pixmap saves have more limited metadata support.
 - The portable and installer executables are unsigned, so SmartScreen warnings
   are expected.
 - Error reporting is mostly modal dialogs plus a few `print` calls. There is no

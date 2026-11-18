@@ -150,6 +150,8 @@ its extension, in any order and without case sensitivity. For example,
 `krea2 345 png` matches `krea2_scene_345.png`. It filters the existing browser
 view; enabled folders remain visible for navigation. Clear the field to show
 all files allowed by the Show options.
+Filtering also narrows the thumbnail selection. Delete, clipboard actions, and
+batch operations act on the selected items that are visible in the browser.
 The compact sort dropdown offers **Name ↑/↓**, **Date ↑/↓**, and **Type ↑/↓**;
 Date ↑ is oldest first and Date ↓ is newest first. The filter field is wider
 to accommodate multiple terms.
@@ -207,6 +209,13 @@ Draw a new box to crop the rotated result. The canvas expands to keep the whole
 image, using black corners for opaque images and transparency for alpha images.
 Neither editor saves the rotation until you use its normal save controls.
 
+Closing **Image Adjust** with unsaved edits offers **Save**, **Discard**, and
+**Cancel**. The checkbox remembers the chosen close action for the current app
+session. Save follows the usual overwrite or save-a-copy controls. A failed or
+cancelled save keeps the editor open. Saving an adjusted PNG retains its PNG
+text, including ComfyUI's `prompt` and `workflow`. Saving to JPEG composites
+transparency onto white.
+
 Settings provides **Maximum decoded image size** under Resource Usage, defaulting
 to **1,024 MiB** (adjustable from 64 to 65,536 MiB). This is a per-image decoding
 limit, not a limit on total application memory. Preview, fullscreen/windowed
@@ -254,6 +263,11 @@ animated inputs. A PNG without generation data converts normally. A5 checks the
 written metadata before replacing the destination. **Delete original** also
 checks that the WebP pixels can be decoded before removing the source.
 **Stop after this file** keeps completed conversions.
+
+With the ComfyUI option off, Batch Convert can save animated GIFs and animated
+WebPs as WebP. It checks the output frames, their timing, and the playback
+repeat count before replacing the destination or deleting the original.
+Unsupported multi-frame conversions are skipped.
 
 ## Building Windows executables
 

@@ -1,6 +1,7 @@
 import math
 import os
 from ui.about_dialog import install_about_shortcut
+from utils.atomic_output import staged_output
 from utils.image_loading import read_pil_image
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, 
                              QGraphicsPixmapItem, QSlider, QLabel, QPushButton, QCheckBox, 
@@ -9,7 +10,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGraphicsView, Q
                              QColorDialog)
 from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence, QColor
-from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+from PIL import Image, ImageEnhance, ImageOps, ImageFilter, PngImagePlugin
 from utils.file_ops import (get_adjustment_settings, set_adjustment_settings,
                             get_adjust_auto_name_copies, set_adjust_auto_name_copies,
                             get_adjust_resampling, set_adjust_resampling)
@@ -18,6 +19,7 @@ class AdjustBoard(QDialog):
     image_saved = pyqtSignal(str)
     image_changed = pyqtSignal(str)
     _session_navigation_choice = None
+    _session_close_choice = None
 
     CONTROL_COLUMNS = (
         (
@@ -76,7 +78,8 @@ class AdjustBoard(QDialog):
         self.resize(1280, 800)
         self._initial_fit_done = False
 
-        self.original_pil = self.read_image(self.image_path)
+        self.source_png_text = {}
+        self.original_pil = self.read_image(self.image_path, png_text=self.source_png_text)
         self.build_preview_source()
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
@@ -90,8 +93,8 @@ class AdjustBoard(QDialog):
         self.update_navigation_buttons()
 
     @staticmethod
-    def read_image(image_path):
-        return read_pil_image(image_path)
+    def read_image(image_path, *, png_text=None):
+        return read_pil_image(image_path, png_text=png_text)
 
     def build_preview_source(self):
         self.preview_original_pil = self.original_pil.copy()
@@ -513,6 +516,8 @@ class AdjustBoard(QDialog):
         set_adjust_auto_name_copies(self.auto_name_copies)
 
     def done(self, result):
+        if not self.confirm_unsaved_changes(closing=True):
+            return
         if self.check_remember.isChecked():
             set_adjustment_settings(True, self.adjustment_values())
         super().done(result)
@@ -1050,7 +1055,20 @@ class AdjustBoard(QDialog):
         if not output_path:
             return False
         try:
-            self.render_final_image().save(output_path)
+            image = self.render_final_image()
+            output_format = Image.registered_extensions().get(os.path.splitext(output_path)[1].lower())
+            options = {}
+            if output_format == "JPEG" and image.mode == "RGBA":
+                background = Image.new("RGB", image.size, "white")
+                background.paste(image, mask=image.getchannel("A"))
+                image = background
+            if output_format == "PNG" and self.source_png_text:
+                png_info = PngImagePlugin.PngInfo()
+                for key, value in self.source_png_text.items():
+                    png_info.add_text(key, value)
+                options["pnginfo"] = png_info
+            with staged_output(output_path) as temp_path:
+                image.save(temp_path, **options)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save image: {e}")
             return False
@@ -1104,25 +1122,33 @@ class AdjustBoard(QDialog):
         self.btn_next.setEnabled(self.adjacent_path(1) is not None)
 
     def confirm_navigation(self):
+        return self.confirm_unsaved_changes(closing=False)
+
+    def confirm_unsaved_changes(self, *, closing):
         if not self.has_unsaved_changes():
             return True
-        if AdjustBoard._session_navigation_choice == "save":
+        choice_attribute = "_session_close_choice" if closing else "_session_navigation_choice"
+        choice = getattr(AdjustBoard, choice_attribute)
+        if choice == "save":
             saved = self.apply_and_save()
             if not saved:
-                AdjustBoard._session_navigation_choice = None
+                setattr(AdjustBoard, choice_attribute, None)
             return saved
-        if AdjustBoard._session_navigation_choice == "discard":
+        if choice == "discard":
             return True
 
         msg = QMessageBox(self)
         msg.setWindowTitle("Save Changes?")
-        msg.setText("Save adjustment changes before moving to another image?")
+        msg.setText("Save changes before closing Image Adjust?" if closing else
+                    "Save adjustment changes before moving to another image?")
         save_btn = msg.addButton("&Save", QMessageBox.ButtonRole.AcceptRole)
         discard_btn = msg.addButton("&Discard", QMessageBox.ButtonRole.DestructiveRole)
         cancel_btn = msg.addButton("&Cancel", QMessageBox.ButtonRole.RejectRole)
-        remember_check = QCheckBox("Don't ask again this session", msg)
+        remember_check = QCheckBox("Don't remind me again when closing Image Adjust this session"
+                                   if closing else "Don't ask again this session", msg)
         msg.setCheckBox(remember_check)
         msg.setDefaultButton(save_btn)
+        msg.setEscapeButton(cancel_btn)
         msg._plain_shortcuts = []
         for sequence, button in (
             ("S", save_btn),
@@ -1139,11 +1165,11 @@ class AdjustBoard(QDialog):
         if clicked == save_btn:
             saved = self.apply_and_save()
             if saved and remember_check.isChecked():
-                AdjustBoard._session_navigation_choice = "save"
+                setattr(AdjustBoard, choice_attribute, "save")
             return saved
         if clicked == discard_btn:
             if remember_check.isChecked():
-                AdjustBoard._session_navigation_choice = "discard"
+                setattr(AdjustBoard, choice_attribute, "discard")
             return True
         return False
 
@@ -1157,7 +1183,8 @@ class AdjustBoard(QDialog):
             if self.check_remember_resize.isChecked() else None
         )
         try:
-            new_original = self.read_image(image_path)
+            png_text = {}
+            new_original = self.read_image(image_path, png_text=png_text)
         except Exception as e:
             QMessageBox.warning(self, "Open Image", f"Failed to open image: {e}")
             return False
@@ -1167,6 +1194,7 @@ class AdjustBoard(QDialog):
         self.rotation_degrees = 0.0
         self.rotation_input.setValue(0.0)
         self.original_pil = new_original
+        self.source_png_text = png_text
         self.build_preview_source()
         self.set_adjustment_values(adjustment_state)
         self.apply_resize_settings(resize_state)

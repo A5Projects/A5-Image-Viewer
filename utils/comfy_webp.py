@@ -1,12 +1,11 @@
 """Write PNG generation data for ComfyUI and the local prompt extractor."""
 
 import json
-import os
 import re
-import tempfile
 
 from PIL import Image
 
+from utils.atomic_output import staged_output
 from utils.compact_metadata import compact_png_summary
 
 
@@ -62,14 +61,8 @@ def webp_metadata(opened):
 
 def save_verified_webp(image, target, quality, options, tags, verify_pixels=False):
     """Publish only after the temporary WebP returns the expected metadata."""
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=os.path.dirname(os.path.abspath(target)), prefix=".a5-webp-",
-            suffix=".webp", delete=False,
-        ) as temp:
-            temp_path = temp.name
-            image.save(temp, "WEBP", quality=quality, **options)
+    with staged_output(target) as temp_path:
+        image.save(temp_path, "WEBP", quality=quality, **options)
         with Image.open(temp_path) as result:
             if result.format != "WEBP" or result.size != image.size:
                 raise ValueError("The saved WebP has unexpected image dimensions or format.")
@@ -80,8 +73,3 @@ def save_verified_webp(image, target, quality, options, tags, verify_pixels=Fals
                 raise ValueError("The saved WebP did not retain its compact prompt summary.")
             if verify_pixels:
                 result.load()
-        os.replace(temp_path, target)
-        temp_path = None
-    finally:
-        if temp_path is not None:
-            os.remove(temp_path)

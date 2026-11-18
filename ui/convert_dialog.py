@@ -3,6 +3,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
                              QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout,
                              QCheckBox, QRadioButton, QFileDialog, QMessageBox, QProgressBar, QWidget)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from utils.animated_webp import save_animated_webp
+from utils.atomic_output import staged_output
 from utils.file_ops import get_format_quality, set_format_quality, get_convert_appendix, set_convert_appendix
 from utils.comfy_webp import webp_metadata, save_verified_webp
 from PIL import Image
@@ -77,17 +79,18 @@ class ConvertWorker(QThread):
                 break
                 
             try:
+                source_stat = os.stat(file_path) if self.keep_date else None
+                delete_source = self.delete_orig and not same_file(file_path, new_path)
                 self.convert_file(file_path, new_path)
                 self.changed_paths.append(new_path)
                     
-                if self.keep_date:
+                if source_stat is not None:
                     try:
-                        stat = os.stat(file_path)
-                        os.utime(new_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+                        os.utime(new_path, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
                     except Exception:
                         pass
                         
-                if self.delete_orig and not same_file(file_path, new_path):
+                if delete_source:
                     try:
                         os.remove(file_path)
                         self.changed_paths.append(file_path)
@@ -103,34 +106,52 @@ class ConvertWorker(QThread):
         self.finished.emit(success_count, total)
 
     def convert_file(self, file_path, new_path):
-        with Image.open(file_path) as opened:
-            if self.keep_comfy:
+        if self.keep_comfy:
+            with Image.open(file_path) as opened:
                 if getattr(opened, "n_frames", 1) != 1:
                     raise ValueError("The metadata-preserving WebP conversion requires a single-frame image.")
                 options, tags = webp_metadata(opened)
                 has_alpha = "A" in opened.getbands() or "transparency" in opened.info
                 img = opened.convert("RGBA" if has_alpha else "RGB")
-            else:
-                img = opened.copy()
-                exif = opened.info.get("exif")
-
-        img = self.apply_rotation(img)
-        if self.keep_comfy:
-            save_verified_webp(img, new_path, self.quality, options, tags, verify_pixels=self.delete_orig)
+            save_verified_webp(self.apply_rotation(img), new_path, self.quality, options, tags,
+                               verify_pixels=self.delete_orig)
             return
 
+        with staged_output(new_path) as temp_path:
+            with Image.open(file_path) as opened:
+                output_format = (self.format_str or Image.registered_extensions().get(
+                    os.path.splitext(new_path)[1].lower(), ""
+                )).upper()
+                if getattr(opened, "n_frames", 1) > 1:
+                    if opened.format not in ("GIF", "WEBP") or output_format != "WEBP":
+                        raise ValueError(
+                            f"Multi-frame {opened.format} to {output_format} is unsupported. "
+                            "Batch Convert supports animated GIF or WebP to WebP."
+                        )
+                    transform = self.apply_rotation if self.rotate_op else None
+                    save_animated_webp(opened, temp_path, self.quality, transform)
+                    return
+                img = self.apply_rotation(opened.copy())
+                exif = opened.info.get("exif")
+            self.save_still_image(img, temp_path, exif)
+            with Image.open(temp_path) as saved:
+                if saved.format != output_format or saved.size != img.size:
+                    raise ValueError("The encoded image format or dimensions differ from the requested output.")
+                saved.load()
+
+    def save_still_image(self, img, target, exif):
         if self.format_str == "JPEG" and img.mode in ("RGBA", "LA", "P"):
             rgba = img.convert("RGBA")
             img = Image.new("RGB", rgba.size, "white")
             img.paste(rgba, mask=rgba.getchannel("A"))
         elif img.mode == "P":
-            img = img.convert("RGB")
+            img = img.convert("RGBA" if "transparency" in img.info else "RGB")
         options = {}
         if self.format_str in ("JPEG", "WebP"):
             options["quality"] = self.quality
             if exif:
                 options["exif"] = exif
-        img.save(new_path, format=self.format_str or None, **options)
+        img.save(target, format=self.format_str or None, **options)
 
     def apply_rotation(self, img):
         if self.rotate_op == "right":

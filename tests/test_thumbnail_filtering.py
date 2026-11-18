@@ -1,13 +1,18 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtGui import QStandardItem
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QItemSelectionModel, Qt, QTimer
+from PyQt6.QtGui import QColor, QImage, QStandardItem
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from ui.main_window import MainWindow
 from ui.thumbnail_view import EXT_ROLE, KIND_ROLE, PATH_ROLE, ThumbnailView
+from utils import file_ops
 
 
 class ThumbnailFilteringTests(unittest.TestCase):
@@ -173,6 +178,102 @@ class ThumbnailFilteringTests(unittest.TestCase):
             item = self.view.item_for_path(video_path)
             self.assertIsNotNone(item)
             self.assertEqual(item.text(), "25 MiB        MP4\niteration.mp4")
+
+
+class FilteredBrowserActionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        config = patch.object(file_ops, "CONFIG_FILE", os.path.join(temp.name, "config.json"))
+        config.start()
+        self.addCleanup(config.stop)
+        file_ops.set_startup_behavior("empty")
+        self.paths = [os.path.join(temp.name, name)
+                      for name in ("a-keep.png", "b-drop.png", "c-keep.png")]
+        image = QImage(24, 16, QImage.Format.Format_RGB32)
+        image.fill(QColor("blue"))
+        for path in self.paths:
+            self.assertTrue(image.save(path))
+        self.window = MainWindow()
+        self.window.current_folder_path = temp.name
+        self.window.load_current_folder()
+        self.window.show()
+        self.window.activateWindow()
+        self.view = self.window.thumbnail_view
+        self.view.setFocus()
+        self.app.processEvents()
+
+    def tearDown(self):
+        self.window.image_modified = False
+        self.view.shutdown()
+        self.window.crop_prefetch_service.shutdown()
+        self.window.transfer_coordinator.shutdown()
+        self.window.close()
+        self.window.deleteLater()
+        self.app.processEvents()
+
+    def test_filter_preserves_visible_selection_for_batch_clipboard_and_delete(self):
+        a, b, c = self.paths
+        self.window.select_image_by_path(b)
+        for path in (c, a):
+            self.view.selectionModel().select(
+                self.view.item_for_path(path).index(), QItemSelectionModel.SelectionFlag.Select
+            )
+        self.window.filter_edit.setText("keep")
+        self.assertEqual(self.view.currentIndex().data(PATH_ROLE), a)
+        self.assertEqual(self.window.current_image_path, a)
+        self.assertCountEqual([i.data(PATH_ROLE) for i in self.view.selectionModel().selectedIndexes()], [a, c])
+        with patch("ui.main_window.ConvertDialog") as dialog:
+            dialog.return_value.exec.return_value = False
+            dialog.return_value.changed_paths = []
+            self.window.open_convert_dialog()
+            dialog.assert_called_once_with([a, c], self.window)
+        with patch.object(QApplication, "clipboard") as clipboard:
+            self.window.cut_to_clipboard()
+            mime = clipboard.return_value.setMimeData.call_args.args[0]
+            self.assertEqual([os.path.normpath(url.toLocalFile()) for url in mime.urls()], [a, c])
+        with patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                patch("ui.main_window.delete_files", return_value=True) as delete:
+            QTest.keyClick(self.view, Qt.Key.Key_Delete)
+            delete.assert_called_once_with([a, c], permanent=False)
+        self.assertIsNotNone(self.view.item_for_path(b))
+
+    def test_filter_cancel_preserves_edit_and_zero_matches_clear_all_targets(self):
+        a, _, _ = self.paths
+        self.window.select_image_by_path(a)
+        self.window.rotate_image_90()
+        pixels = self.window.modified_pixmap.cacheKey()
+        with patch.object(self.window, "prompt_save_changes", return_value=False) as prompt:
+            self.window.filter_edit.setText("KeEp")
+            prompt.assert_not_called()
+            self.window.filter_edit.setText("missing")
+            prompt.assert_called_once_with()
+        self.assertEqual(self.window.filter_edit.text(), "KeEp")
+        self.assertEqual(self.view.currentIndex().data(PATH_ROLE), a)
+        self.assertEqual(self.window.modified_pixmap.cacheKey(), pixels)
+        self.assertTrue(self.window.image_modified)
+
+        QTimer.singleShot(0, lambda: QTest.keyClick(QApplication.activeModalWidget(), Qt.Key.Key_D))
+        self.window.filter_edit.setText("missing")
+        self.assertFalse(self.view.currentIndex().isValid())
+        self.assertIsNone(self.window.current_image_path)
+        self.assertTrue(self.window.preview_viewer.pixmap_item.pixmap().isNull())
+        self.assertEqual(self.window.file_operation_paths(), [])
+        with patch.object(self.window.fullscreen_viewer, "load_image") as load, \
+                patch("ui.main_window.QMessageBox.question") as confirm, \
+                patch.object(QApplication, "clipboard") as clipboard:
+            QTest.keyClick(self.view, Qt.Key.Key_Return)
+            QTest.keyClick(self.view, Qt.Key.Key_Delete)
+            self.window.copy_to_clipboard()
+            load.assert_not_called()
+            confirm.assert_not_called()
+            clipboard.return_value.setMimeData.assert_not_called()
+        self.window.filter_edit.clear()
+        self.assertEqual(self.window.selected_file_paths(), [])
 
 
 if __name__ == "__main__":

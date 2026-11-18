@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QToolButton, QSizePolicy, QLabel, QStatusBar, QListWidgetItem, QCheckBox, QFileIconProvider,
                              QWidgetAction, QStyle, QFrame, QHeaderView)
 from PyQt6.QtGui import QFileSystemModel
-from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo
+from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo, QModelIndex, QSignalBlocker
 from ui.thumbnail_view import (ThumbnailView, PATH_ROLE, KIND_ROLE, EXT_ROLE, SIZE_ROLE,
                                MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, FINGERPRINT_ROLE,
                                thumbnail_fingerprint, thumbnail_item_label)
@@ -1732,7 +1732,15 @@ class MainWindow(QMainWindow):
             self.load_current_folder(keep_selection_path=self.current_image_path)
 
     def on_filter_changed(self, text):
-        self.thumbnail_view.set_filter_text(text)
+        view = self.thumbnail_view
+        current = view.currentIndex()
+        if (self.image_modified and current.isValid()
+                and not view.matches_filename_filter(current, text.lower().split())
+                and not self.prompt_save_changes()):
+            with QSignalBlocker(self.filter_edit):
+                self.filter_edit.setText(view.filter_text)
+            return
+        view.set_filter_text(text)
         self.update_status_bar()
 
     def on_show_options_changed(self, checked=None):
@@ -1897,6 +1905,8 @@ class MainWindow(QMainWindow):
         self.open_thumbnail_fullscreen(self.thumbnail_view.currentIndex())
 
     def open_thumbnail_fullscreen(self, index):
+        if not index.isValid() or self.thumbnail_view.isRowHidden(index.row()):
+            return
         file_path = index.data(PATH_ROLE)
         item_kind = index.data(KIND_ROLE)
         if not file_path:
@@ -2016,7 +2026,7 @@ class MainWindow(QMainWindow):
             return
         model = self.thumbnail_view.model()
         index = model.indexFromItem(item)
-        if not index.isValid():
+        if not index.isValid() or self.thumbnail_view.isRowHidden(index.row()):
             return
 
         selection_model = self.thumbnail_view.selectionModel()
@@ -2027,6 +2037,8 @@ class MainWindow(QMainWindow):
             selection_model.blockSignals(False)
         elif changed:
             self.thumbnail_view.setCurrentIndex(index)
+            if self.thumbnail_view.currentIndex() != index:
+                return
 
         self.current_image_path = file_path
         self.current_item_kind = index.data(KIND_ROLE)
@@ -2052,7 +2064,7 @@ class MainWindow(QMainWindow):
     def next_visible_image_row(self, row, direction, wrap=True):
         model = self.thumbnail_view.model()
         count = model.rowCount()
-        if count == 0 or direction not in (-1, 1):
+        if row is None or count == 0 or direction not in (-1, 1):
             return None
 
         if wrap:
@@ -2114,16 +2126,16 @@ class MainWindow(QMainWindow):
     def selected_file_paths(self, include_folders=False):
         paths = []
         indexes = sorted(
-            self.thumbnail_view.selectionModel().selectedIndexes(),
+            self.thumbnail_view.selectedIndexes(),
             key=lambda index: index.row()
         )
         for index in indexes:
             if not index.isValid() or (index.data(KIND_ROLE) == "folder" and not include_folders):
                 continue
             path = index.data(PATH_ROLE)
-            if path and path not in paths:
+            if path:
                 paths.append(path)
-        return paths
+        return list(dict.fromkeys(paths))
 
     def selected_clipboard_paths(self):
         focus_widget = QApplication.focusWidget()
@@ -2136,22 +2148,18 @@ class MainWindow(QMainWindow):
             if tree_paths:
                 return tree_paths
 
-        paths = []
-        indexes = sorted(
-            self.thumbnail_view.selectionModel().selectedIndexes(),
-            key=lambda index: index.row()
-        )
-        for index in indexes:
-            if not index.isValid():
-                continue
-            path = index.data(PATH_ROLE)
-            if path and os.path.exists(path) and path not in paths:
-                paths.append(path)
+        paths = [path for path in self.selected_file_paths(include_folders=True)
+                 if os.path.exists(path)]
         if paths:
             return paths
 
-        if self.current_image_path and os.path.exists(self.current_image_path):
-            return [self.current_image_path]
+        current = self.thumbnail_view.currentIndex()
+        if current.isValid() and not self.thumbnail_view.isRowHidden(current.row()):
+            path = current.data(PATH_ROLE)
+            if path and os.path.exists(path):
+                return [path]
+        if self.thumbnail_view.filter_text.strip():
+            return []
         return self.selected_tree_folder_paths()
 
     def selected_tree_folder_paths(self):
@@ -2170,16 +2178,16 @@ class MainWindow(QMainWindow):
     def selected_image_paths(self):
         paths = []
         indexes = sorted(
-            self.thumbnail_view.selectionModel().selectedIndexes(),
+            self.thumbnail_view.selectedIndexes(),
             key=lambda index: index.row()
         )
         for index in indexes:
             if not index.isValid() or index.data(KIND_ROLE) != "image":
                 continue
             path = index.data(PATH_ROLE)
-            if path and path not in paths:
+            if path:
                 paths.append(path)
-        return paths
+        return list(dict.fromkeys(paths))
 
     def supports_associated_editor(self):
         return windows_shell.is_windows()
@@ -2543,7 +2551,7 @@ class MainWindow(QMainWindow):
         model = self.thumbnail_view.model()
         total = model.rowCount()
         visible = self.thumbnail_view.visible_item_count
-        selected_indexes = self.thumbnail_view.selectionModel().selectedIndexes()
+        selected_indexes = self.thumbnail_view.selectedIndexes()
         selected = len(selected_indexes)
 
         parts = [f"{visible} object(s)"]
@@ -2594,12 +2602,11 @@ class MainWindow(QMainWindow):
         paths = self.selected_file_paths()
         if paths:
             return paths
-        if (
-            self.current_image_path and
-            self.current_item_kind != "folder" and
-            os.path.isfile(self.current_image_path)
-        ):
-            return [self.current_image_path]
+        current = self.thumbnail_view.currentIndex()
+        if current.isValid() and not self.thumbnail_view.isRowHidden(current.row()):
+            path = current.data(PATH_ROLE)
+            if current.data(KIND_ROLE) != "folder" and path and os.path.isfile(path):
+                return [path]
         return []
         
     def open_copy_dialog(self, parent_override=None):
@@ -2742,13 +2749,12 @@ class MainWindow(QMainWindow):
 
     def restore_thumbnail_selection(self, paths, current_path=None):
         selection_model = self.thumbnail_view.selectionModel()
-        selection_model.blockSignals(True)
-        try:
+        with QSignalBlocker(selection_model):
             selection_model.clearSelection()
             valid_indexes = []
             for path in paths:
                 item = self.thumbnail_view.item_for_path(path)
-                if item is None:
+                if item is None or self.thumbnail_view.isRowHidden(item.row()):
                     continue
                 index = self.thumbnail_view.model().indexFromItem(item)
                 if not index.isValid():
@@ -2757,23 +2763,17 @@ class MainWindow(QMainWindow):
                 valid_indexes.append(index)
 
             current_item = self.thumbnail_view.item_for_path(current_path) if current_path else None
-            current_index = (
-                self.thumbnail_view.model().indexFromItem(current_item)
-                if current_item is not None
-                else (valid_indexes[0] if valid_indexes else None)
-            )
-            if current_index is not None and current_index.isValid():
-                selection_model.setCurrentIndex(
-                    current_index,
-                    QItemSelectionModel.SelectionFlag.NoUpdate
-                )
-        finally:
-            selection_model.blockSignals(False)
+            current_hidden = current_item is not None and self.thumbnail_view.isRowHidden(current_item.row())
+            if current_item is not None and not current_hidden:
+                current_index = self.thumbnail_view.model().indexFromItem(current_item)
+            else:
+                current_index = valid_indexes[0] if valid_indexes else QModelIndex()
+            selection_model.setCurrentIndex(current_index, QItemSelectionModel.SelectionFlag.NoUpdate)
 
-        if current_path:
-            item = self.thumbnail_view.item_for_path(current_path)
-            if item is not None:
-                self.thumbnail_view.prioritize_rows_around(item.row())
+        if current_hidden and not self.fullscreen_viewer.isVisible():
+            self.on_thumbnail_selected(current_index)
+        if current_index.isValid():
+            self.thumbnail_view.prioritize_rows_around(current_index.row())
         self.update_status_bar()
 
     def reposition_thumbnail_items(self, paths):
@@ -3353,10 +3353,11 @@ class MainWindow(QMainWindow):
         index = self.thumbnail_view.indexAt(pos)
         if index.isValid():
             selection = self.thumbnail_view.selectionModel()
-            if not selection.isSelected(index):
-                self.thumbnail_view.setCurrentIndex(index)
-            self.current_image_path = index.data(PATH_ROLE)
-            self.current_item_kind = index.data(KIND_ROLE)
+            flags = (QItemSelectionModel.SelectionFlag.NoUpdate if selection.isSelected(index)
+                     else QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            selection.setCurrentIndex(index, flags)
+            if self.thumbnail_view.currentIndex() != index:
+                return
 
         if not self.current_image_path:
             return
@@ -3492,11 +3493,7 @@ class MainWindow(QMainWindow):
         self.crop_prefetch_service.configure(settings)
 
     def open_convert_dialog(self):
-        indexes = self.thumbnail_view.selectionModel().selectedIndexes()
-        files = []
-        for index in indexes:
-            if index.data(KIND_ROLE) == "image":
-                files.append(index.data(PATH_ROLE))
+        files = self.selected_image_paths()
                 
         if not files:
             QMessageBox.information(self, "Convert", "Please select at least one image to convert.")

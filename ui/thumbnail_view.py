@@ -3,7 +3,7 @@ from bisect import bisect_left
 from collections import deque, OrderedDict
 from threading import Condition
 from PyQt6.QtWidgets import QListView, QStyledItemDelegate, QStyle
-from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal, QMimeData, QUrl, QItemSelectionModel
+from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QImageReader, QImage, QPainter, QColor, QDrag, QPen, QFont, QBrush
 from ui.theme import theme_colors
 from ui.thumbnail_history import PackedThumbnail, ThumbnailHistory
@@ -1130,7 +1130,7 @@ class ThumbnailView(QListView):
         self.prioritize_visible_thumbnails()
 
     def startDrag(self, supported_actions):
-        indexes = self.selectionModel().selectedIndexes()
+        indexes = self.selectedIndexes()
         paths = []
         for index in indexes:
             if not index.isValid():
@@ -1186,7 +1186,7 @@ class ThumbnailView(QListView):
         return paths
 
     def set_filter_text(self, text):
-        self.filter_text = text.strip().lower()
+        self.filter_text = text
         self.apply_filter()
 
     def set_kind_visibility(self, show_images=True, show_videos=False,
@@ -1198,16 +1198,22 @@ class ThumbnailView(QListView):
         self.show_folders = show_folders
         self.apply_filter()
 
+    @staticmethod
+    def matches_filename_filter(item, terms):
+        if item.data(KIND_ROLE) == "folder":
+            return True
+        name = os.path.basename(item.data(PATH_ROLE) or "").lower()
+        ext = (item.data(EXT_ROLE) or "").lower()
+        return all(term in name or term in ext for term in terms)
+
     def apply_filter(self):
         visible_rows = []
-        terms = self.filter_text.split()
+        terms = self.filter_text.lower().split()
         for row in range(self.thumbnail_model.rowCount()):
             item = self.thumbnail_model.item(row)
             if item is None:
                 continue
             kind = item.data(KIND_ROLE)
-            file_path = item.data(PATH_ROLE) or ""
-            name = os.path.basename(file_path).lower()
             ext = item.data(EXT_ROLE) or ""
             is_pdf = kind == "image" and ext.lower() == "pdf"
             kind_visible = (
@@ -1217,17 +1223,36 @@ class ThumbnailView(QListView):
                 (kind == "text" and self.show_text) or
                 (kind == "folder" and self.show_folders)
             )
-            text_visible = (
-                kind == "folder" or
-                all(term in name or term in ext.lower() for term in terms)
-            )
-            visible = kind_visible and text_visible
+            visible = kind_visible and (not terms or self.matches_filename_filter(item, terms))
             self.setRowHidden(row, not visible)
             if visible:
                 visible_rows.append(row)
         self.visible_rows = visible_rows
         self.visible_item_count = len(visible_rows)
+        self.remove_hidden_selection()
         self.prioritize_visible_thumbnails()
+
+    def remove_hidden_selection(self):
+        selection = self.selectionModel()
+        selected = selection.selectedIndexes()
+        visible = [index for index in selected if not self.isRowHidden(index.row())]
+        if len(visible) < len(selected):
+            visible.sort(key=lambda index: index.row())
+            kept = QItemSelection()
+            start = previous = None
+            for index in visible:
+                if previous is None or index.row() != previous.row() + 1:
+                    if start is not None:
+                        kept.select(start, previous)
+                    start = index
+                previous = index
+            if start is not None:
+                kept.select(start, previous)
+            selection.select(kept, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        current = self.currentIndex()
+        if current.isValid() and self.isRowHidden(current.row()):
+            first = min(visible, key=lambda index: index.row(), default=QModelIndex())
+            selection.setCurrentIndex(first, QItemSelectionModel.SelectionFlag.NoUpdate)
 
     def next_visible_row(self, row, direction):
         count = self.thumbnail_model.rowCount()
