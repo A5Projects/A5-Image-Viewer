@@ -9,7 +9,7 @@ from PIL import Image
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QShortcut
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from ui.about_dialog import AboutDialog, SHORTCUTS, install_about_shortcut
 from ui.adjust_board import AdjustBoard
@@ -48,6 +48,7 @@ class AboutTests(unittest.TestCase):
 
     def test_offline_license_changelog_and_all_shortcut_sections(self):
         dialog = self.keep(AboutDialog())
+        self.assertTrue(any(RELEASE_TAG in label.text() for label in dialog.findChildren(QLabel)))
         self.assertIn("GNU GENERAL PUBLIC LICENSE", dialog.license_browser.toPlainText())
         self.assertIn(RELEASE_TAG, dialog.changelog_browser.toPlainText())
         self.assertIn("v1.0.0-20260918", dialog.changelog_browser.toPlainText())

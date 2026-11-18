@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-18 — v1.0.0-20261118.1
+
+- Thumbnail loading follows the latest scroll position within the selected
+  resource profile. Returning to a folder reuses its session-cached images.
+- Folder metadata scans run in the background. F5 preserves the selection and
+  scroll anchor. Ctrl+F5 rebuilds the current folder's thumbnails.
+- Opening a preview or viewer image gives it priority over new thumbnail reads.
+- About shows the full release tag so same-day updates can be identified.
+
 ## 2026-11-18 — v1.0.0-20261118
 
 - Reopening a folder reuses unchanged thumbnails from a bounded RAM cache.

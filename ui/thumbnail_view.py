@@ -1,7 +1,8 @@
 import os
 from bisect import bisect_left
 from collections import deque, OrderedDict
-from threading import Condition
+from contextlib import contextmanager
+from threading import Condition, Event
 from PyQt6.QtWidgets import QListView, QStyledItemDelegate, QStyle
 from PyQt6.QtCore import QSize, Qt, QObject, QCoreApplication, QThread, QThreadPool, QRunnable, QTimer, pyqtSignal, pyqtSlot, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QImageReader, QImage, QPainter, QColor, QDrag, QPen, QFont, QBrush
@@ -79,6 +80,85 @@ def _read_folder_preview_image(file_path, cell_width, cell_height, queue=None):
     _, image = read_scaled_thumbnail(file_path, QSize(cell_width, cell_height), fill=True, queue=queue)
     return image
 
+def scan_folder(folder_path, sort_key, reverse, supported_formats, video_formats,
+                show_images, show_videos, show_folders, show_pdfs, show_text,
+                cancelled=lambda: False):
+    files = []
+    with os.scandir(folder_path) as entries:
+        for entry in entries:
+            if cancelled():
+                return []
+            if entry.is_dir():
+                if not show_folders:
+                    continue
+                ext = ""
+                kind = "folder"
+            elif entry.is_file():
+                _, ext = os.path.splitext(entry.name)
+                ext = ext[1:].lower()
+                if ext == "pdf" and show_pdfs:
+                    kind = "image"
+                elif ext == "txt" and show_text:
+                    kind = "text"
+                elif (
+                    ext != "pdf" and
+                    ext in supported_formats and
+                    show_images
+                ):
+                    kind = "image"
+                elif ext in video_formats and show_videos:
+                    kind = "video"
+                else:
+                    continue
+            else:
+                continue
+
+            try:
+                stat = entry.stat()
+                modified_time = stat.st_mtime
+                file_size = stat.st_size
+                fingerprint = thumbnail_fingerprint(stat)
+            except OSError:
+                modified_time = 0
+                file_size = 0
+                fingerprint = None
+            files.append((entry.path, entry.name, ext, modified_time, kind, file_size, fingerprint))
+
+    folders = [item for item in files if item[4] == "folder"]
+    non_folders = [item for item in files if item[4] != "folder"]
+
+    folders.sort(key=lambda item: item[1].lower())
+    if sort_key == "date":
+        non_folders.sort(key=lambda item: (item[3], item[1].lower()), reverse=reverse)
+    elif sort_key == "type":
+        non_folders.sort(key=lambda item: (item[2], item[1].lower()), reverse=reverse)
+    else:
+        non_folders.sort(key=lambda item: item[1].lower(), reverse=reverse)
+    files = folders + non_folders
+    return files
+
+
+class FolderScan(QRunnable):
+    def __init__(self, arguments, generation, cancelled, results):
+        super().__init__()
+        self.arguments = arguments
+        self.generation = generation
+        self.cancelled = cancelled
+        self.results = results
+
+    def stop(self):
+        self.cancelled.set()
+
+    def run(self):
+        try:
+            records = scan_folder(*self.arguments, cancelled=self.cancelled.is_set)
+            error = ""
+        except OSError as exc:
+            records, error = [], str(exc)
+        if not self.cancelled.is_set():
+            self.results.scan.emit(self.generation, records, error)
+
+
 class ThumbnailItemDelegate(QStyledItemDelegate):
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
@@ -117,7 +197,10 @@ class ThumbnailTaskQueue:
         self.running = True
         self.background_paused = False
         self.pending_rows = set(initial_rows)
-        self.background_rows = deque(initial_rows)
+        self.background_order = range(len(files))
+        self.cursor = 0
+        self.remaining = len(files)
+        self.foreground_loading = False
         self.priority_rows = deque()
         self.priority_set = set()
         self.in_flight = set()
@@ -130,7 +213,7 @@ class ThumbnailTaskQueue:
     def take_next(self):
         with self.condition:
             while self.running:
-                if len(self.awaiting_delivery) + len(self.in_flight) >= self.max_awaiting:
+                if self.foreground_loading or len(self.awaiting_delivery) + len(self.in_flight) >= self.max_awaiting:
                     self.condition.wait()
                     continue
                 while self.priority_rows:
@@ -142,8 +225,10 @@ class ThumbnailTaskQueue:
                         return row, True
 
                 if not self.background_paused:
-                    while self.background_rows:
-                        row = self.background_rows.popleft()
+                    while self.pending_rows and self.remaining:
+                        row = self.background_order[self.cursor]
+                        self.cursor = (self.cursor + 1) % len(self.background_order)
+                        self.remaining -= 1
                         if row in self.pending_rows:
                             self.pending_rows.discard(row)
                             self.in_flight.add(row)
@@ -152,8 +237,17 @@ class ThumbnailTaskQueue:
                 self.condition.wait()
         return None, False
 
-    def request_rows(self, rows):
+    def request_rows(self, rows, viewport=None):
         with self.condition:
+            if viewport is not None:
+                order, start = viewport
+                self.priority_rows.clear()
+                self.priority_set.clear()
+                self.promoted_in_flight.clear()
+                self.requested_after_delivery.clear()
+                self.background_order = order
+                self.remaining = len(order)
+                self.cursor = start % len(order) if order else 0
             for row in rows:
                 if row < 0 or row >= len(self.files) or self.files[row][4] != "image":
                     continue
@@ -192,7 +286,7 @@ class ThumbnailTaskQueue:
                 ):
                     continue
                 self.pending_rows.add(row)
-                self.background_rows.append(row)
+                self.remaining = len(self.background_order)
             self.condition.notify_all()
 
     def task_done(self, row, success):
@@ -221,6 +315,11 @@ class ThumbnailTaskQueue:
                     self.priority_set.add(row)
             self.condition.notify_all()
 
+    def set_foreground_loading(self, loading):
+        with self.condition:
+            self.foreground_loading = loading
+            self.condition.notify_all()
+
     def set_background_paused(self, paused):
         with self.condition:
             self.background_paused = paused
@@ -234,6 +333,7 @@ class ThumbnailTaskQueue:
 
 
 class ThumbnailResults(QObject):
+    scan = pyqtSignal(int, object, str)
     thumbnail = pyqtSignal(int, int, object, object, int, int, bool, object)
     folder = pyqtSignal(int, str, object)
 
@@ -327,6 +427,8 @@ class FolderPreviewQueue:
 
     def prioritize(self, paths):
         with self.condition:
+            self.priority_paths.clear()
+            self.priority_set.clear()
             for path in paths:
                 if path in self.pending and path not in self.priority_set:
                     self.priority_paths.append(path)
@@ -474,6 +576,8 @@ class ThumbnailPool(QThreadPool):
 
 
 class ThumbnailView(QListView):
+    folder_loaded = pyqtSignal(str, object)
+    folder_load_failed = pyqtSignal(str)
     files_dropped = pyqtSignal(list)
     video_queue_changed = pyqtSignal(int, object)
     video_priority_requested = pyqtSignal(int, object)
@@ -524,7 +628,24 @@ class ThumbnailView(QListView):
             self.destroyed.connect(pool.dispose, Qt.ConnectionType.QueuedConnection)
         # Workers retain this emitter until delivery finishes, even if the
         # receiving view is already being destroyed.
+        self.folder_path = None
+        self.loading = False
+        self._scan_request = None
+        self._scan_cancel = Event()
+        self._scan_generation = 0
+        self._preparing = None
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.timeout.connect(self._prepare_batch)
+        self._priority_timer = QTimer(self)
+        self._priority_timer.setSingleShot(True)
+        self._priority_timer.timeout.connect(self.prioritize_visible_thumbnails)
+        self.foreground_loading = False
+        self.scan_pool = ThumbnailPool(1, QThread.Priority.LowPriority)
+        self.destroyed.connect(self.scan_pool.stop)
+        self.destroyed.connect(self.scan_pool.dispose, Qt.ConnectionType.QueuedConnection)
         self.thumbnail_results = ThumbnailResults()
+        self.thumbnail_results.scan.connect(self._scan_finished, Qt.ConnectionType.QueuedConnection)
         self.thumbnail_results.thumbnail.connect(self.update_thumbnail, Qt.ConnectionType.QueuedConnection)
         self.thumbnail_results.folder.connect(self.update_folder_thumbnail, Qt.ConnectionType.QueuedConnection)
         self.thumbnail_history = ThumbnailHistory(history_budget(total_budget))
@@ -545,6 +666,7 @@ class ThumbnailView(QListView):
         self.load_generation = 0
         self.visible_item_count = 0
         self.visible_rows = []
+        self._applied_filter = None
 
     @property
     def task_queue(self):
@@ -630,6 +752,7 @@ class ThumbnailView(QListView):
         self.setGridSize(QSize(size + 30, size + 78))
         if changed:
             self.thumbnail_history.clear()
+            self._rescan_if_pending()
             if self.files:
                 self.invalidate_all_thumbnails()
 
@@ -673,60 +796,196 @@ class ThumbnailView(QListView):
             self._start_thumbnail_workers()
 
     def shutdown(self):
+        self.cancel_scan()
+        self._priority_timer.stop()
+        self.scan_pool.join()
         self.shutdown_gif_playback()
         self._stop_thumbnail_workers()
         self.thumbnail_pool.join()
         self.folder_pool.join()
         self.thumbnail_history.clear()
         
+    def cancel_scan(self):
+        self._scan_cancel.set()
+        self._scan_generation += 1
+        self.scan_pool.stop()
+        self._apply_timer.stop()
+        self._preparing = None
+        self.loading = False
+
     def load_folder(self, folder_path, sort_key="name", reverse=False,
                     show_images=True, show_videos=False, show_folders=True,
-                    show_pdfs=True, show_text=False):
-        self.load_generation += 1
-        self._reset_gifs()
-        self._stop_thumbnail_workers()
+                    show_pdfs=True, show_text=False, *, force=False, asynchronous=False):
+        self.cancel_scan()
+        self.show_images, self.show_pdfs = show_images, show_pdfs
+        self.show_text, self.show_videos, self.show_folders = show_text, show_videos, show_folders
+        if not self.is_current_folder(folder_path):
+            self._stop_thumbnail_workers()
+            self._reset_gifs()
+            self.load_generation += 1
+            self.video_queue_changed.emit(self.load_generation, [])
+            self._clear_thumbnail_cache(reset_icons=False)
+            self.files = []
+            self.visible_rows = []
+            self.visible_item_count = 0
+            self.path_items.clear()
+            self.thumbnail_model.clear()
+            self.folder_path = folder_path
+        self._force_refresh = force
+        self._scan_async = asynchronous
+        self._scan_request = (self.folder_path, sort_key, reverse, show_images, show_videos,
+                              show_folders, show_pdfs, show_text)
+        self.loading = True
+        self._scan_cancel = Event()
+        if asynchronous:
+            args = self._scan_arguments(self.folder_path, sort_key, reverse)
+            task = FolderScan(args, self._scan_generation, self._scan_cancel, self.thumbnail_results)
+            self.scan_pool.queue = task
+            self.scan_pool.start(task)
+        else:
+            try:
+                records = self._scan_files(self.folder_path, sort_key, reverse)
+            except OSError as exc:
+                self._scan_finished(self._scan_generation, [], str(exc))
+            else:
+                self._scan_finished(self._scan_generation, records, "")
 
-        self.show_images = show_images
-        self.show_pdfs = show_pdfs
-        self.show_text = show_text
-        self.show_videos = show_videos
-        self.show_folders = show_folders
-        files = self._scan_files(folder_path, sort_key, reverse)
-        self.files = files
-        self._clear_thumbnail_cache(reset_icons=False)
-        self.path_items.clear()
-        self.thumbnail_model.clear()
-        self.setUpdatesEnabled(False)
+    def is_current_folder(self, path):
+        return bool(self.folder_path and path and
+                    os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(self.folder_path)))
+
+    def _rescan_if_pending(self):
+        if self.loading:
+            self.load_folder(*self._scan_request, force=self._force_refresh, asynchronous=True)
+
+    def _scan_finished(self, generation, records, error):
+        if generation != self._scan_generation:
+            return
+        if error:
+            self.loading = False
+            self.folder_load_failed.emit(error)
+            return
+        if (not self._force_refresh and records == self.files
+                and not any(r[4] == "folder" for r in records)
+                and not (self.task_queue and self.task_queue.failed_rows)):
+            self.loading = False
+            if self._applied_filter != self._filter_state():
+                self.apply_filter()
+            self.folder_loaded.emit(self.folder_path, set())
+            return
+        self._preparing = self._prepare_records(records)
+        self._prepare_batch()
+
+    def _prepare_batch(self):
+        if self._preparing is None:
+            return
+        preparing = self._preparing
+        try:
+            while self._preparing is preparing:
+                next(preparing)
+                if self._scan_async:
+                    self._apply_timer.start(0)
+                    break
+        except StopIteration:
+            if self._preparing is preparing:
+                self._preparing = None
+
+    def _prepare_records(self, records):
+        # Prepare new items off-model so a cancelled scan never leaves a partial grid.
+        existing = {r[0]: r for r in self.files}
+        fresh = []
+        changed = set()
         target_size = self.iconSize().width()
-        for file_path, file_name, ext, modified_time, kind, file_size, fingerprint in files:
-            icon = self._icon_for_kind(kind)
-            cached = None
-            if kind == "image":
-                cached = self.thumbnail_history.get(file_path, fingerprint, target_size)
-            width = cached.source_width if cached else 0
-            height = cached.source_height if cached else 0
-            label = thumbnail_item_label(file_name, ext, kind, file_size, width, height)
-            item = QStandardItem(icon, label)
-            item.setData(file_path, PATH_ROLE)
-            item.setData(kind, KIND_ROLE)
-            item.setData(ext, EXT_ROLE)
-            item.setData(file_size, SIZE_ROLE)
-            item.setData(modified_time, MODIFIED_ROLE)
-            item.setData(fingerprint, FINGERPRINT_ROLE)
-            if cached is not None:
-                item.setData(width, WIDTH_ROLE)
-                item.setData(height, HEIGHT_ROLE)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.thumbnail_model.appendRow(item)
-            self.register_item(item)
-        self.setUpdatesEnabled(True)
-        self.apply_filter()
+        for row, record in enumerate(records):
+            path, name, ext, modified, kind, size, fingerprint = record
+            previous = existing.pop(path, None)
+            if self._force_refresh or previous != record or kind == "folder":
+                cached = None
+                if kind == "image" and not self._force_refresh:
+                    cached = self.thumbnail_history.get(path, fingerprint, target_size)
+                width, height = (cached.source_width, cached.source_height) if cached else (0, 0)
+                item = QStandardItem(self._icon_for_kind(kind),
+                                     thumbnail_item_label(name, ext, kind, size, width, height))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                for role, value in ((PATH_ROLE, path), (KIND_ROLE, kind), (EXT_ROLE, ext),
+                                    (SIZE_ROLE, size), (MODIFIED_ROLE, modified),
+                                    (FINGERPRINT_ROLE, fingerprint), (WIDTH_ROLE, width),
+                                    (HEIGHT_ROLE, height)):
+                    item.setData(value, role)
+                fresh.append(item)
+                if previous is not None or self._force_refresh:
+                    changed.add(path)
+            if row % 128 == 127:
+                yield
+        self._commit_records(records, fresh, changed, set(existing))
 
+    def _commit_records(self, records, fresh, changed, removed):
+        model = self.thumbnail_model
+        selection = self.selectionModel()
+        selected = [idx.data(PATH_ROLE) for idx in selection.selectedIndexes()]
+        current = self.currentIndex().data(PATH_ROLE)
+        rows, _ = self._viewport_priority()
+        anchor = model.index(rows[0], 0) if rows else QModelIndex()
+        anchor_path = anchor.data(PATH_ROLE)
+        anchor_top = self.visualRect(anchor).top() if anchor.isValid() else 0
+        scroll = self.verticalScrollBar().value()
+        self._stop_thumbnail_workers()
+        self._reset_gifs()
+        self.load_generation += 1
+        blocked = selection.blockSignals(True)
+        try:
+            stale_rows = []
+            for path in changed | removed:
+                item = self.item_for_path(path)
+                if item is not None:
+                    stale_rows.append(item.row())
+                    self.path_items.pop(os.path.normcase(os.path.abspath(path)), None)
+                self._evict_path(path, reset_icon=False)
+                if self._force_refresh:
+                    self.thumbnail_history.discard(path)
+            # Remove contiguous runs together and append all new items in one layout change.
+            stale_rows.sort()
+            while stale_rows:
+                end = start = stale_rows.pop()
+                while stale_rows and stale_rows[-1] == start - 1:
+                    start = stale_rows.pop()
+                model.removeRows(start, end - start + 1)
+            if fresh:
+                model.invisibleRootItem().appendRows(fresh)
+                for item in fresh:
+                    self.register_item(item)
+            if any(model.item(row).data(PATH_ROLE) != r[0] for row, r in enumerate(records)):
+                signals_blocked = model.blockSignals(True)
+                try:
+                    for rank, record in enumerate(records):
+                        self.item_for_path(record[0]).setData(rank, SORT_ORDER_ROLE)
+                finally:
+                    model.blockSignals(signals_blocked)
+                model.setSortRole(SORT_ORDER_ROLE)
+                model.sort(0)
+            self.files = records
+            self.apply_filter()
+            def visible_index(path):
+                item = self.item_for_path(path)
+                return item.index() if item and not self.isRowHidden(item.row()) else QModelIndex()
+            indexes = [idx for path in selected if (idx := visible_index(path)).isValid()]
+            selection.select(thumbnail_selection(indexes), QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            selection.setCurrentIndex(visible_index(current), QItemSelectionModel.SelectionFlag.NoUpdate)
+            self.doItemsLayout()
+            bar = self.verticalScrollBar()
+            bar.setValue(scroll)
+            anchor = visible_index(anchor_path)
+            if anchor.isValid():
+                bar.setValue(bar.value() + self.visualRect(anchor).top() - anchor_top)
+        finally:
+            selection.blockSignals(blocked)
+        self.cache_background_paused = self.thumbnail_cache_bytes >= self.thumbnail_cache_limit
+        self.loading = False
+        videos = [r[0] for r in records if r[4] == "video" and r[0] not in self.thumbnail_cache]
+        self.video_queue_changed.emit(self.load_generation, videos)
         self._start_thumbnail_workers()
-        video_paths = [record[0] for record in files if record[4] == "video"]
-        self.video_queue_changed.emit(self.load_generation, video_paths)
-        self.prioritize_rows_around(0)
-        
+        self.folder_loaded.emit(self.folder_path, changed | removed)
+
     @pyqtSlot(int, int, object, object, int, int, bool, object)
     def update_thumbnail(self, generation, row, record, img, width, height, priority, packed):
         if generation != self.image_generation:
@@ -862,6 +1121,7 @@ class ThumbnailView(QListView):
                 item.data(FINGERPRINT_ROLE)
             ))
         self.files = records
+        self._rescan_if_pending()
         self._start_thumbnail_workers()
 
     def unregister_items(self, items):
@@ -908,38 +1168,37 @@ class ThumbnailView(QListView):
         self.thumbnail_cache = remapped_cache
         self.pinned_paths = {mapping.get(path, path) for path in self.pinned_paths}
 
-    def prioritize_rows_around(self, row, radius=80):
-        if row < 0 or not self.visible_rows:
-            return
-        if self.interactive_background_paused:
-            radius = 0
-        position = bisect_left(self.visible_rows, row)
-        rows = self.visible_rows[max(0, position - radius):position + radius + 1]
-        self._request_image_rows(rows)
-        self._request_video_priority(rows)
-        self._request_folder_priority(rows)
+    def prioritize_rows_around(self, row):
+        if row >= 0:
+            self._request_image_rows([row])
+            self._request_video_priority([row])
+            self._request_folder_priority([row])
+
+    def _viewport_priority(self):
+        rows = self.visible_rows
+        if not rows:
+            return [], 0
+        model = self.thumbnail_model
+        lo, hi = 0, len(rows)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.visualRect(model.index(rows[mid], 0)).bottom() < 0:
+                lo = mid + 1
+            else:
+                hi = mid
+        end = lo
+        while end < len(rows) and self.visualRect(model.index(rows[end], 0)).top() < self.viewport().height():
+            end += 1
+        columns = max(1, self.viewport().width() // max(1, self.gridSize().width()))
+        last = min(len(rows), end + columns)
+        return rows[lo:end] + rows[max(0, lo - columns):lo] + rows[end:last], last
 
     def prioritize_visible_thumbnails(self):
         if self._painted_gifs:
             self._gif_sync_timer.start(0)
-        if self.thumbnail_model.rowCount() == 0:
-            return
-
-        grid = self.gridSize()
-        if grid.width() <= 0 or grid.height() <= 0:
-            return
-
-        columns = max(1, self.viewport().width() // grid.width())
-        top = self.verticalScrollBar().value()
-        bottom = top + self.viewport().height()
-        first = max(0, (top // grid.height()) * columns)
-        last = min(
-            self.thumbnail_model.rowCount(),
-            ((bottom // grid.height()) + 2) * columns
-        )
-        rows = self.visible_rows[first:last]
+        rows, cursor = self._viewport_priority()
         self._set_pinned_rows(rows)
-        self._request_image_rows(rows)
+        self._request_image_rows(rows, viewport=(self.visible_rows, cursor))
         self._request_video_priority(rows)
         self._request_folder_priority(rows)
 
@@ -967,6 +1226,7 @@ class ThumbnailView(QListView):
             decode_budget=self.decode_budget,
         )
         self._update_background_pause(force=True)
+        self.prioritize_visible_thumbnails()
         for _ in range(self.thumbnail_workers):
             worker = ThumbnailWorker(
                 self.files,
@@ -993,7 +1253,7 @@ class ThumbnailView(QListView):
         if not folder_paths or not self.show_folders:
             return
         self.folder_pool.queue = FolderPreviewQueue(folder_paths, self.decode_budget)
-        paused = self.cache_background_paused or self.interactive_background_paused
+        paused = self.cache_background_paused or self.interactive_background_paused or self.foreground_loading
         self.folder_preview_queue.set_paused(paused)
         worker = FolderPreviewWorker(
             self.folder_preview_queue,
@@ -1019,7 +1279,7 @@ class ThumbnailView(QListView):
         if paths:
             self.folder_preview_queue.prioritize(paths)
 
-    def _request_image_rows(self, rows, retry=False):
+    def _request_image_rows(self, rows, retry=False, viewport=None):
         if self.task_queue is None:
             return
         requested = []
@@ -1035,7 +1295,7 @@ class ThumbnailView(QListView):
         if retry:
             self.task_queue.retry_rows(requested)
         else:
-            self.task_queue.request_rows(requested)
+            self.task_queue.request_rows(requested, viewport)
 
     def _resume_background_fill(self):
         if self.task_queue is None or self.thumbnail_cache_bytes >= self.thumbnail_cache_limit:
@@ -1046,6 +1306,8 @@ class ThumbnailView(QListView):
         self.request_thumbnail_refreshes([file_path])
 
     def request_thumbnail_refreshes(self, paths):
+        if paths:
+            self._rescan_if_pending()
         rows = []
         for path in paths:
             self.thumbnail_history.discard(path)
@@ -1091,7 +1353,7 @@ class ThumbnailView(QListView):
 
         if priority:
             self._evict_for_cost(cost, protected_path=file_path)
-        elif self.thumbnail_cache_bytes + cost > self.thumbnail_cache_limit:
+        if self.thumbnail_cache_bytes + cost > self.thumbnail_cache_limit:
             self.cache_background_paused = True
             self._update_background_pause()
             return False
@@ -1118,7 +1380,7 @@ class ThumbnailView(QListView):
         while self.thumbnail_cache and self.thumbnail_cache_bytes > self.thumbnail_cache_limit:
             victim = self._oldest_evictable_path()
             if victim is None:
-                break
+                victim = next(iter(self.thumbnail_cache))
             self._evict_path(victim)
         self.cache_background_paused = self.thumbnail_cache_bytes >= self.thumbnail_cache_limit
 
@@ -1167,12 +1429,26 @@ class ThumbnailView(QListView):
             if path in self.thumbnail_cache:
                 self.thumbnail_cache.move_to_end(path)
 
+    @contextmanager
+    def opening_image(self):
+        previous = self.foreground_loading
+        self.foreground_loading = True
+        self.decode_budget.set_paused(True)
+        self._update_background_pause(force=True)
+        try:
+            yield
+        finally:
+            self.foreground_loading = previous
+            self.decode_budget.set_paused(previous)
+            self._update_background_pause(force=True)
+
     def _update_background_pause(self, force=False):
-        paused = self.cache_background_paused or self.interactive_background_paused
+        paused = self.cache_background_paused or self.interactive_background_paused or self.foreground_loading
         if not force and paused == self._last_background_paused:
             return
         self._last_background_paused = paused
         if self.task_queue is not None:
+            self.task_queue.set_foreground_loading(self.foreground_loading)
             self.task_queue.set_background_paused(paused)
         if self.folder_preview_queue is not None:
             self.folder_preview_queue.set_paused(paused)
@@ -1244,7 +1520,8 @@ class ThumbnailView(QListView):
 
     def scrollContentsBy(self, dx, dy):
         super().scrollContentsBy(dx, dy)
-        self.prioritize_visible_thumbnails()
+        if not self._priority_timer.isActive():
+            self._priority_timer.start(20)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1328,6 +1605,7 @@ class ThumbnailView(QListView):
         return all(term in name or term in ext for term in terms)
 
     def apply_filter(self):
+        self._applied_filter = self._filter_state()
         visible_rows = []
         terms = self.filter_text.lower().split()
         for row in range(self.thumbnail_model.rowCount()):
@@ -1352,6 +1630,10 @@ class ThumbnailView(QListView):
         self.visible_item_count = len(visible_rows)
         self.remove_hidden_selection()
         self.prioritize_visible_thumbnails()
+
+    def _filter_state(self):
+        return (self.filter_text, self.show_images, self.show_pdfs, self.show_text,
+                self.show_videos, self.show_folders)
 
     def remove_hidden_selection(self):
         selection = self.selectionModel()
@@ -1387,63 +1669,13 @@ class ThumbnailView(QListView):
                 return row
         return None
 
+    def _scan_arguments(self, folder_path, sort_key, reverse):
+        return (folder_path, sort_key, reverse, self._supported_image_formats(),
+                self._supported_video_formats(), self.show_images, self.show_videos,
+                self.show_folders, self.show_pdfs, self.show_text)
+
     def _scan_files(self, folder_path, sort_key, reverse):
-        supported_formats = self._supported_image_formats()
-        video_formats = self._supported_video_formats()
-        files = []
-        try:
-            with os.scandir(folder_path) as entries:
-                for entry in entries:
-                    if entry.is_dir():
-                        if not self.show_folders:
-                            continue
-                        ext = ""
-                        kind = "folder"
-                    elif entry.is_file():
-                        _, ext = os.path.splitext(entry.name)
-                        ext = ext[1:].lower()
-                        if ext == "pdf" and self.show_pdfs:
-                            kind = "image"
-                        elif ext == "txt" and self.show_text:
-                            kind = "text"
-                        elif (
-                            ext != "pdf" and
-                            ext in supported_formats and
-                            self.show_images
-                        ):
-                            kind = "image"
-                        elif ext in video_formats and self.show_videos:
-                            kind = "video"
-                        else:
-                            continue
-                    else:
-                        continue
-
-                    try:
-                        stat = entry.stat()
-                        modified_time = stat.st_mtime
-                        file_size = stat.st_size
-                        fingerprint = thumbnail_fingerprint(stat)
-                    except OSError:
-                        modified_time = 0
-                        file_size = 0
-                        fingerprint = None
-                    files.append((entry.path, entry.name, ext, modified_time, kind, file_size, fingerprint))
-        except Exception:
-            return []
-
-        folders = [item for item in files if item[4] == "folder"]
-        non_folders = [item for item in files if item[4] != "folder"]
-
-        folders.sort(key=lambda item: item[1].lower())
-        if sort_key == "date":
-            non_folders.sort(key=lambda item: (item[3], item[1].lower()), reverse=reverse)
-        elif sort_key == "type":
-            non_folders.sort(key=lambda item: (item[2], item[1].lower()), reverse=reverse)
-        else:
-            non_folders.sort(key=lambda item: item[1].lower(), reverse=reverse)
-        files = folders + non_folders
-        return files
+        return scan_folder(*self._scan_arguments(folder_path, sort_key, reverse))
 
     def _supported_image_formats(self):
         formats = {

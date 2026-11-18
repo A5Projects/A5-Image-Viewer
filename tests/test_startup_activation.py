@@ -9,6 +9,7 @@ from PIL import Image
 from PyQt6.QtWidgets import QApplication
 
 from main import startup_path_from_arguments
+from tests.qt_wait import wait_until
 from ui.main_window import MainWindow
 from utils import file_ops
 
@@ -51,6 +52,7 @@ class StartupActivationTests(unittest.TestCase):
             window = MainWindow(startup_path=image_path)
             try:
                 self.assertTrue(window.open_startup_path(image_path))
+                wait_until(lambda: not window.thumbnail_view.loading)
                 self.assertEqual(
                     os.path.normpath(window.current_folder_path),
                     os.path.normpath(folder),

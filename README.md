@@ -237,6 +237,13 @@ image thumbnails from the current session. New and changed images are decoded
 again. Scrolling brings cached thumbnails into view on demand. The first visit
 also compresses small previews in the background for later use.
 
+F5 keeps the surviving selection and scroll position. Ctrl+F5 rebuilds the
+current folder's thumbnails, including files edited with their original size
+and timestamp. Folder scanning runs in the background. Scrolling gives the
+visible images first priority, then nearby images, then the rest of the
+filtered list moving down and wrapping to the top. Opening a preview or
+viewer image briefly pauses new thumbnail reads.
+
 The thumbnail history uses up to a quarter of the thumbnail RAM budget in
 **Settings → Resource Usage**, capped at 256 MiB. Older entries are evicted as
 it fills. The history disappears when you close A5 and creates no database on

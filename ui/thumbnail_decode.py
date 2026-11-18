@@ -15,6 +15,7 @@ class ThumbnailDecodeBudget:
         self.condition = Condition()
         self.active = 0
         self.bytes_in_use = 0
+        self.paused = False
         self.configure(workers, cache_bytes)
 
     def configure(self, workers, cache_bytes):
@@ -25,8 +26,13 @@ class ThumbnailDecodeBudget:
 
     def _available(self, cost):
         # Let a single large source that Qt can decode run by itself.
-        return self.active < self.workers and (
+        return not self.paused and self.active < self.workers and (
             self.active == 0 or self.bytes_in_use + cost <= self.byte_limit)
+
+    def set_paused(self, paused):
+        with self.condition:
+            self.paused = paused
+            self.condition.notify_all()
 
     def acquire(self, cost, queue, *, wait=True):
         with self.condition:

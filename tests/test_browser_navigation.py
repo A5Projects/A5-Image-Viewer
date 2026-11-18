@@ -91,6 +91,7 @@ class BrowserNavigationTests(unittest.TestCase):
         # moving on before the previous folder has finished populating.
         for folder in folders * 3:
             self.window.navigate_to_folder(str(folder))
+            self.wait_until(lambda: not self.view.loading)
             self.window.select_image_by_path(str(folder / "image-00.png"))
             self.assertEqual(Path(self.window.current_folder_path), folder)
             self.assertEqual(Path(self.window.current_image_path).parent, folder)
@@ -99,6 +100,7 @@ class BrowserNavigationTests(unittest.TestCase):
         self.assertEqual(Path(self.window.current_folder_path), folders[1])
         self.window.folder_navigation_buttons["forward"].click()
         self.assertEqual(Path(self.window.current_folder_path), folders[2])
+        self.wait_until(lambda: not self.view.loading)
         self.window.select_image_by_path(str(folders[2] / "image-00.png"))
         self.wait_until(lambda: all(
             self.view.model().item(row).data(WIDTH_ROLE) == 960

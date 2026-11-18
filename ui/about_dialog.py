@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.app_info import (
-    APP_NAME, APP_VERSION, RELEASE_DATE, GITHUB_URL, bundled_file, read_bundled_text,
+    APP_NAME, RELEASE_TAG, RELEASE_DATE, GITHUB_URL, bundled_file, read_bundled_text,
 )
 from utils.file_ops import get_disable_f1_shortcut, set_disable_f1_shortcut
 from utils.update_check import ReleaseChecker
@@ -23,7 +23,7 @@ SHORTCUTS = {
         ("X / A", "Open Crop Board / Adjust Colors & Size"),
         ("F2", "Rename"),
         ("F3 / F4", "Open in associated application / associated editor"),
-        ("F5", "Refresh folder"),
+        ("F5 / Ctrl+F5", "Refresh folder and keep your place / rebuild its thumbnails"),
         ("Ctrl+C / Ctrl+X / Ctrl+V", "Copy / cut / paste files (text fields use normal text shortcuts)"),
         ("Ctrl+A", "Select all thumbnails when the thumbnail view has focus"),
         ("Delete / Shift+Delete", "Recycle / permanently delete selected files or folders"),
@@ -108,7 +108,7 @@ class AboutDialog(QDialog):
         icon.setPixmap(self.windowIcon().pixmap(48, 48))
         heading.addWidget(icon)
         details = QLabel(
-            f"<b>{APP_NAME} {APP_VERSION}</b><br>Update: {RELEASE_DATE}"
+            f"<b>{APP_NAME}</b><br>{RELEASE_TAG}<br>Released {RELEASE_DATE}"
         )
         links = QLabel(
             f'<a href="{GITHUB_URL}">GitHub project</a> · '

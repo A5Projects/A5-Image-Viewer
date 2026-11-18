@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
 from ui.thumbnail_view import EXT_ROLE, KIND_ROLE, PATH_ROLE, ThumbnailView
 from utils import file_ops
+from tests.qt_wait import wait_until
 
 
 class ThumbnailFilteringTests(unittest.TestCase):
@@ -201,6 +202,7 @@ class FilteredBrowserActionTests(unittest.TestCase):
         self.window = MainWindow()
         self.window.current_folder_path = temp.name
         self.window.load_current_folder()
+        wait_until(lambda: not self.window.thumbnail_view.loading)
         self.window.show()
         self.window.activateWindow()
         self.view = self.window.thumbnail_view

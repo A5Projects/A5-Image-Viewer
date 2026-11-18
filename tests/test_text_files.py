@@ -14,6 +14,7 @@ from ui.main_window import MainWindow
 from ui.thumbnail_view import KIND_ROLE, PATH_ROLE, ThumbnailView
 from ui.transfer_conflicts import TransferJob, TransferConflictDialog, ResolvedTransfer, scan_transfer_job
 from utils import file_ops
+from tests.qt_wait import wait_until
 
 
 class TextFileTests(unittest.TestCase):
@@ -52,6 +53,7 @@ class TextFileTests(unittest.TestCase):
     def enable_text(self):
         self.window.show_text_action.setChecked(True)
         self.window.apply_pending_show_options()
+        wait_until(lambda: not self.window.thumbnail_view.loading)
 
     def select_both(self):
         self.window.select_image_by_path(self.image)

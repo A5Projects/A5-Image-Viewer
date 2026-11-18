@@ -703,6 +703,13 @@ class MainWindow(QMainWindow):
         shortcut_f5 = QShortcut(QKeySequence("F5"), self)
         shortcut_f5.setContext(Qt.ShortcutContext.WindowShortcut)
         shortcut_f5.activated.connect(self.refresh_folder)
+        shortcut_full_refresh = QShortcut(QKeySequence("Ctrl+F5"), self)
+        shortcut_full_refresh.activated.connect(lambda: self.refresh_folder(force=True))
+        self._pending_startup_image = None
+        self._pending_browser_sync = None
+        self._pending_folder_selection = None
+        self.thumbnail_view.folder_loaded.connect(self.on_folder_loaded)
+        self.thumbnail_view.folder_load_failed.connect(self.on_folder_load_failed)
 
         shortcut_a = QShortcut(QKeySequence("A"), self)
         shortcut_a.setContext(Qt.ShortcutContext.WindowShortcut)
@@ -1042,8 +1049,13 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(path):
             return False
 
-        folder_path = os.path.dirname(path)
-        self.navigate_to_folder(folder_path)
+        self._pending_startup_image = path
+        if self.navigate_to_folder(os.path.dirname(path)):
+            return True
+        self._pending_startup_image = None
+        return False
+
+    def _open_loaded_startup_image(self, path):
         item = self.thumbnail_view.item_for_path(path)
         if item is None:
             return False
@@ -1565,11 +1577,11 @@ class MainWindow(QMainWindow):
             self.fullscreen_viewer.viewer.clear_image()
             self.fullscreen_viewer.close()
 
-    def refresh_folder(self):
+    def refresh_folder(self, checked=False, *, force=False):
         self.refresh_drive_buttons()
         selection = self.tree_view.selectionModel().selectedIndexes()
         if self.current_folder_path:
-            self.load_current_folder(keep_selection_path=self.current_image_path)
+            self.load_current_folder(force=force)
         elif selection:
             self.on_folder_selected(selection[0])
 
@@ -1781,14 +1793,17 @@ class MainWindow(QMainWindow):
         if self.current_folder_path:
             self.load_current_folder(keep_selection_path=self.current_image_path)
 
-    def load_current_folder(self, keep_selection_path=None):
+    def load_current_folder(self, keep_selection_path=None, *, force=False):
         if not self.current_folder_path:
             return
 
         self.update_folder_window_title()
 
-        if hasattr(self, "crop_prefetch_service"):
+        switching = not self.thumbnail_view.is_current_folder(self.current_folder_path)
+        if force or switching:
             self.clear_viewer_prefetch()
+        self._pending_folder_selection = keep_selection_path
+        self.thumbnail_view.filter_text = self.filter_edit.text()
         self.thumbnail_view.load_folder(
             self.current_folder_path,
             sort_key=self.sort_key,
@@ -1797,11 +1812,34 @@ class MainWindow(QMainWindow):
             show_pdfs=self.show_pdfs,
             show_videos=self.show_videos,
             show_text=self.show_text,
-            show_folders=self.show_folders
+            show_folders=self.show_folders, force=force, asynchronous=True,
         )
-        self.thumbnail_view.set_filter_text(self.filter_edit.text())
-        if keep_selection_path:
-            self.select_image_by_path(keep_selection_path)
+        if switching and not self.image_modified:
+            self.on_thumbnail_selected(QModelIndex())
+
+    def on_folder_load_failed(self, error):
+        self._pending_folder_selection = self._pending_startup_image = self._pending_browser_sync = None
+        self.status_label.setText("Could not read folder: " + error)
+
+    def on_folder_loaded(self, folder, changed):
+        if not self.thumbnail_view.is_current_folder(self.current_folder_path):
+            return
+        for path in changed:
+            entry = self.viewer_prefetch_cache.pop(path, None)
+            if entry is not None:
+                self.viewer_prefetch_cache_bytes -= entry[2]
+        selected, self._pending_folder_selection = self._pending_folder_selection, None
+        if (selected and self.thumbnail_view.item_for_path(selected) is not None
+                and self.thumbnail_view.currentIndex().data(PATH_ROLE) != selected):
+            self.select_image_by_path(selected)
+        elif self.current_image_path in changed and not self.image_modified:
+            self.on_thumbnail_selected(self.thumbnail_view.currentIndex())
+        startup, self._pending_startup_image = self._pending_startup_image, None
+        if startup and self.thumbnail_view.item_for_path(startup) is not None:
+            self._open_loaded_startup_image(startup)
+        sync, self._pending_browser_sync = self._pending_browser_sync, None
+        if sync and sync == self.fullscreen_viewer.current_image_path and self.row_for_path(sync) is not None:
+            self.sync_browser_to_viewed_image()
         self.update_status_bar()
             
     def prompt_save_changes(self):
@@ -2010,7 +2048,8 @@ class MainWindow(QMainWindow):
         if not path or not os.path.isfile(path):
             return False
         if self.row_for_path(path) is None:
-            self.navigate_to_folder(os.path.dirname(path))
+            self._pending_browser_sync = path
+            return self.navigate_to_folder(os.path.dirname(path))
         row = self.row_for_path(path)
         if row is None:
             return False
@@ -2497,16 +2536,18 @@ class MainWindow(QMainWindow):
             self.thumbnail_view.update_video_thumbnail(generation, file_path, image)
 
     def load_prefetched_preview(self, file_path):
-        image = self.take_viewer_prefetch(file_path)
-        if image is not None:
-            self.preview_viewer.set_source_pixmap(file_path, QPixmap.fromImage(image))
-        else:
-            self.preview_viewer.load_image(file_path)
+        with self.thumbnail_view.opening_image():
+            image = self.take_viewer_prefetch(file_path)
+            if image is not None:
+                self.preview_viewer.set_source_pixmap(file_path, QPixmap.fromImage(image))
+            else:
+                self.preview_viewer.load_image(file_path)
         self.schedule_viewer_prefetch(file_path)
 
     def load_prefetched_fullscreen(self, file_path):
-        image = self.take_viewer_prefetch(file_path)
-        self.fullscreen_viewer.load_image(file_path, image)
+        with self.thumbnail_view.opening_image():
+            image = self.take_viewer_prefetch(file_path)
+            self.fullscreen_viewer.load_image(file_path, image)
         self.schedule_viewer_prefetch(file_path)
 
     def schedule_viewer_prefetch(self, file_path):
@@ -3500,6 +3541,7 @@ class MainWindow(QMainWindow):
         refresh_action = QAction("Refresh (F5)", self)
         refresh_action.triggered.connect(self.refresh_folder)
         menu.addAction(refresh_action)
+        menu.addAction("Rebuild thumbnails (Ctrl+F5)").triggered.connect(lambda: self.refresh_folder(force=True))
 
         # Map to global relative to thumbnail_view
         menu.exec(self.thumbnail_view.viewport().mapToGlobal(pos))

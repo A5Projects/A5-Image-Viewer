@@ -331,8 +331,9 @@ slash style or original casing as identity.
 
 ## 6. Folder Scanning, Sorting, and Filtering
 
-`ThumbnailView._scan_files` uses `os.scandir` and builds the model before image
-decoding begins.
+The browser submits metadata scans to a single low-priority worker. The latest
+request supersedes earlier scans. The GUI prepares new rows in batches and
+commits a complete snapshot, retaining the current grid on refresh errors.
 
 - Folders are always sorted A-Z and placed before files.
 - Sort labels use Name/Date/Type with ↑/↓ for ascending/descending. The closed
@@ -385,7 +386,7 @@ Arrow expansion must not select the folder or trigger `load_current_folder`.
 
 The thumbnail system is deliberately demand-aware:
 
-1. A folder scan creates placeholder rows synchronously.
+1. A folder scan supplies file fingerprints and metadata for placeholders.
 2. `ThumbnailTaskQueue` tracks background, priority, in-flight, awaiting-GUI,
    failed, and re-requested rows under a `Condition`.
 3. Low-priority `ThumbnailWorker` jobs decode scaled images with
