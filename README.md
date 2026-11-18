@@ -239,6 +239,22 @@ usual filename-conflict choices. TXT files show a file icon without a preview;
 double-click opens the associated application. Text visibility resets to off
 when the application restarts, and captions are selected manually.
 
+## Batch conversion with ComfyUI metadata
+
+Select the images, open **Batch Convert / Rotate**, choose **WebP**, and check
+**Keep ComfyUI workflow and compact prompt summary**. A5 copies the PNG's
+embedded `workflow` and API `prompt` into the WebP so ComfyUI can recover them.
+It also writes the Local Media Tools summary for the standalone prompt extractor,
+including the positive and negative prompts and any generation settings it
+recognizes. Either graph can be preserved independently. The compact summary
+also recognizes supported InvokeAI and A1111 generation settings.
+
+This option is off by default. It works on selected still images and skips
+animated inputs. A PNG without generation data converts normally. A5 checks the
+written metadata before replacing the destination. **Delete original** also
+checks that the WebP pixels can be decoded before removing the source.
+**Stop after this file** keeps completed conversions.
+
 ## Building Windows executables
 
 Run `build-exe.bat` for the portable executable or `build-installer.bat` for the

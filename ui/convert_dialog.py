@@ -1,10 +1,10 @@
 import os
-import time
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout,
                              QCheckBox, QRadioButton, QFileDialog, QMessageBox, QProgressBar, QWidget)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from utils.file_ops import get_format_quality, set_format_quality, get_convert_appendix, set_convert_appendix
+from utils.comfy_webp import webp_metadata, save_verified_webp
 from PIL import Image
 
 def path_key(path):
@@ -44,7 +44,8 @@ class ConvertWorker(QThread):
     finished = pyqtSignal(int, int) # success, total
     error = pyqtSignal(str, str) # filepath, error_msg
 
-    def __init__(self, files, target_folder, appendix, format_str, rotate_op, quality, keep_date, delete_orig):
+    def __init__(self, files, target_folder, appendix, format_str, rotate_op, quality, keep_date, delete_orig,
+                 keep_comfy=False):
         super().__init__()
         self.files = files
         self.target_folder = target_folder
@@ -54,6 +55,7 @@ class ConvertWorker(QThread):
         self.quality = quality
         self.keep_date = keep_date
         self.delete_orig = delete_orig
+        self.keep_comfy = bool(keep_comfy and format_str == "WebP")
         self.changed_paths = []
         self._is_running = True
 
@@ -75,44 +77,13 @@ class ConvertWorker(QThread):
                 break
                 
             try:
-                with Image.open(file_path) as opened:
-                    img = opened.copy()
-                    exif = opened.info.get('exif')
-
-                img = self.apply_rotation(img)
-                
-                # Handling modes
-                save_format = self.format_str or None
-                if save_format == "JPEG" and img.mode in ('RGBA', 'LA', 'P'):
-                    # Create a white background
-                    background = Image.new('RGB', img.size, (255, 255, 255))
-                    if img.mode == 'RGBA':
-                        background.paste(img, mask=img.split()[3]) # paste using alpha channel as mask
-                    elif img.mode == 'LA':
-                        background.paste(img, mask=img.split()[1])
-                    else:
-                        img = img.convert('RGBA')
-                        background.paste(img, mask=img.split()[3])
-                    img = background
-                elif img.mode == 'P':
-                    img = img.convert('RGB')
-                
-                if save_format in ("JPEG", "WebP"):
-                    if exif:
-                        img.save(new_path, format=save_format, quality=self.quality, exif=exif)
-                    else:
-                        img.save(new_path, format=save_format, quality=self.quality)
-                else:
-                    if save_format:
-                        img.save(new_path, format=save_format)
-                    else:
-                        img.save(new_path)
+                self.convert_file(file_path, new_path)
                 self.changed_paths.append(new_path)
                     
                 if self.keep_date:
                     try:
                         stat = os.stat(file_path)
-                        os.utime(new_path, (stat.st_atime, stat.st_mtime))
+                        os.utime(new_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
                     except Exception:
                         pass
                         
@@ -130,6 +101,36 @@ class ConvertWorker(QThread):
             self.progress.emit(i + 1, total)
             
         self.finished.emit(success_count, total)
+
+    def convert_file(self, file_path, new_path):
+        with Image.open(file_path) as opened:
+            if self.keep_comfy:
+                if getattr(opened, "n_frames", 1) != 1:
+                    raise ValueError("The metadata-preserving WebP conversion requires a single-frame image.")
+                options, tags = webp_metadata(opened)
+                has_alpha = "A" in opened.getbands() or "transparency" in opened.info
+                img = opened.convert("RGBA" if has_alpha else "RGB")
+            else:
+                img = opened.copy()
+                exif = opened.info.get("exif")
+
+        img = self.apply_rotation(img)
+        if self.keep_comfy:
+            save_verified_webp(img, new_path, self.quality, options, tags, verify_pixels=self.delete_orig)
+            return
+
+        if self.format_str == "JPEG" and img.mode in ("RGBA", "LA", "P"):
+            rgba = img.convert("RGBA")
+            img = Image.new("RGB", rgba.size, "white")
+            img.paste(rgba, mask=rgba.getchannel("A"))
+        elif img.mode == "P":
+            img = img.convert("RGB")
+        options = {}
+        if self.format_str in ("JPEG", "WebP"):
+            options["quality"] = self.quality
+            if exif:
+                options["exif"] = exif
+        img.save(new_path, format=self.format_str or None, **options)
 
     def apply_rotation(self, img):
         if self.rotate_op == "right":
@@ -154,6 +155,8 @@ class ConvertDialog(QDialog):
         self.resize(520, 500)
         self.files = files
         self.changed_paths = []
+        self.error_examples = []
+        self.stop_requested = False
         
         layout = QVBoxLayout(self)
         
@@ -219,10 +222,17 @@ class ConvertDialog(QDialog):
         options_layout = QVBoxLayout(options_group)
         
         self.keep_date_cb = QCheckBox("Keep original date/time attributes")
+        self.keep_comfy_cb = QCheckBox("Keep ComfyUI workflow and compact prompt summary")
+        self.keep_comfy_cb.setToolTip(
+            "Converts PNG workflow and prompt graphs to WebP metadata and keeps a summary "
+            "for the standalone prompt extractor. Other still images can be included. "
+            "Animated inputs are skipped."
+        )
         self.delete_orig_cb = QCheckBox("Delete original")
         self.delete_orig_cb.setProperty("destructive", True)
         
         options_layout.addWidget(self.keep_date_cb)
+        options_layout.addWidget(self.keep_comfy_cb)
         options_layout.addWidget(self.delete_orig_cb)
         layout.addWidget(options_group)
         
@@ -242,7 +252,7 @@ class ConvertDialog(QDialog):
         self.close_btn = QPushButton("Close")
         
         self.convert_btn.clicked.connect(self.start_conversion)
-        self.close_btn.clicked.connect(self.reject)
+        self.close_btn.clicked.connect(self.close_or_stop)
         
         btn_layout.addWidget(self.convert_btn)
         btn_layout.addWidget(self.close_btn)
@@ -263,6 +273,7 @@ class ConvertDialog(QDialog):
             
     def on_format_changed(self):
         fmt = self.format_combo.currentText()
+        self.keep_comfy_cb.setEnabled(fmt == "WebP")
         if fmt in ("JPEG", "WebP"):
             self.quality_container.show()
             q = get_format_quality(fmt)
@@ -321,14 +332,16 @@ class ConvertDialog(QDialog):
                 return
                 
         self.convert_btn.setEnabled(False)
-        self.close_btn.setEnabled(False)
+        self.close_btn.setText("Stop after this file")
+        self.error_examples.clear()
         self.progress_bar.setMaximum(len(self.files))
         self.progress_bar.setValue(0)
         self.progress_bar.show()
         
         self.worker = ConvertWorker(
             self.files, target_folder, appendix, fmt, rotate_op, quality, 
-            self.keep_date_cb.isChecked(), self.delete_orig_cb.isChecked()
+            self.keep_date_cb.isChecked(), self.delete_orig_cb.isChecked(),
+            keep_comfy=self.keep_comfy_cb.isEnabled() and self.keep_comfy_cb.isChecked()
         )
         self.changed_paths = self.worker.changed_paths
         self.worker.progress.connect(self.on_progress)
@@ -341,14 +354,27 @@ class ConvertDialog(QDialog):
         self.status_label.setText(f"Processed {current} / {total}")
         
     def on_error(self, file_path, msg):
+        if len(self.error_examples) < 5:
+            self.error_examples.append(f"{os.path.basename(file_path)}: {msg}" if file_path else msg)
         print(f"Failed to convert {file_path}: {msg}")
         
     def on_finished(self, success_count, total):
         if self.worker is not None:
             self.worker.wait()
         self.worker = None
-        QMessageBox.information(self, "Done", f"Processed {success_count} of {total} files successfully.")
+        message = f"Converted {success_count} of {total} files."
+        if self.error_examples:
+            message += "\n\n" + "\n".join(self.error_examples)
+        QMessageBox.information(self, "Stopped" if self.stop_requested else "Done", message)
         self.accept()
+
+    def close_or_stop(self):
+        if self.worker is None:
+            self.reject()
+        else:
+            self.stop_requested = True
+            self.worker.stop()
+            self.close_btn.setEnabled(False)
 
     def reject(self):
         if self.worker is not None and self.worker.isRunning():

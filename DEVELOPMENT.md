@@ -646,9 +646,17 @@ the worker attempts rollback.
 
 Batch Convert runs in a `QThread`, supports PNG/JPEG/WebP output, optional
 rotate/flip, quality for JPEG/WebP, date preservation, and optional source
-deletion. It is a simpler pipeline than batch rotate and does not use the same
-atomic replacement helper. Treat changes to overwrite or deletion behavior as
-high risk.
+deletion. The optional metadata-preserving WebP path stages each still image
+beside its destination and verifies its EXIF fields and compact XMP payload
+before `os.replace`. It also decodes the staged pixels when source deletion
+is selected. Other conversion modes retain the existing direct-save behavior.
+
+`utils/comfy_webp.py` writes the native ComfyUI `prompt:` and `workflow:`
+EXIF strings, preserving JSON number literals and escaping Unicode for TIFF ASCII.
+`utils/compact_metadata.py` extracts the standalone Local Media Tools summary.
+Its reader expects UTF-8 JSON in the WebP XMP chunk. A5 also writes compatible
+ImageDescription and UserComment fallbacks when those slots are free. The
+worker processes one image at a time and checks cancellation between files.
 
 Conversion validates the complete output plan before writing: duplicate targets
 and outputs that would overwrite another selected source are rejected. Source
