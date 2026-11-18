@@ -7,12 +7,13 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QColor, QImage, QShortcut, QStandardItem
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
+from ui.dialogs import CopyMoveDialog
 from ui.thumbnail_view import EXT_ROLE, KIND_ROLE, PATH_ROLE, WIDTH_ROLE, thumbnail_item_label
 from utils import file_ops
 
@@ -159,6 +160,52 @@ class BrowserNavigationTests(unittest.TestCase):
             self.window.navigate_to_folder(str(third))
             self.assertFalse(buttons["forward"].isEnabled())
             self.assertEqual([Path(path) for path in self.window.navigation_history], [first, third])
+
+    def test_settings_limit_the_live_address_bar_and_both_destination_dialogs(self):
+        folders = [Path(self.temp.name) / str(n) for n in range(4)]
+        for folder in folders:
+            folder.mkdir()
+            file_ops.add_recent_folder(str(folder))
+        with patch.object(self.window, "load_current_folder"):
+            for folder in folders[:3]:
+                self.window.navigate_to_folder(str(folder))
+            self.window.navigate_to_folder(str(folders[0]))
+
+            def set_limits():
+                dialog = self.app.activeModalWidget()
+                dialog.visited_limit_spin.setValue(2)
+                dialog.destination_limit_spin.setValue(1)
+                dialog.accept()
+
+            QTimer.singleShot(0, set_limits)
+            self.window.open_settings_dialog()
+            bar = self.window.address_bar
+            self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [folders[0], folders[2]])
+            self.assertEqual(Path(self.window.current_folder_path), folders[0])
+            bar.setEditText(str(folders[3]))
+            QTest.keyClick(bar.lineEdit(), Qt.Key.Key_Return)
+            self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [folders[3], folders[0]])
+            self.assertEqual(file_ops.get_address_folders(), [str(folders[3]), str(folders[0])])
+        for is_move in (False, True):
+            dialog = CopyMoveDialog(self.window, is_move=is_move)
+            self.assertEqual(dialog.list_widget.count(), 1)
+            self.assertEqual(Path(dialog.list_widget.item(0).text()), folders[3])
+            dialog.close()
+
+    def test_offline_folders_do_not_leave_evicted_entries_in_the_dropdown(self):
+        current, offline, oldest, new = [Path(self.temp.name) / name for name in ("a", "b", "c", "d")]
+        for folder in (current, oldest, new):
+            folder.mkdir()
+        file_ops.set_folder_history_limits(3, 30)
+        for folder in (oldest, offline, current):
+            file_ops.add_address_folder(str(folder))
+        self.window.load_address_history()
+        self.window.remember_folder(str(new))
+        bar = self.window.address_bar
+        self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [new, current])
+        offline.mkdir()
+        self.window.remember_folder(str(offline))
+        self.assertEqual([Path(bar.itemText(i)) for i in range(bar.count())], [offline, new, current])
 
     def test_up_button_works_from_address_field_but_backspace_still_edits_text(self):
         root = Path(self.temp.name)

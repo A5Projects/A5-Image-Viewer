@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QToolButton, QSizePolicy, QLabel, QStatusBar, QListWidgetItem, QCheckBox, QFileIconProvider,
                              QWidgetAction, QStyle, QFrame, QHeaderView)
 from PyQt6.QtGui import QFileSystemModel
-from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo, QModelIndex, QSignalBlocker
+from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo, QModelIndex, QSignalBlocker, QStringListModel
 from ui.thumbnail_view import (ThumbnailView, PATH_ROLE, KIND_ROLE, EXT_ROLE, SIZE_ROLE,
                                MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, FINGERPRINT_ROLE,
                                thumbnail_fingerprint, thumbnail_item_label)
@@ -389,6 +389,8 @@ class MainWindow(QMainWindow):
         address_layout.addWidget(navigation_group)
 
         self.address_bar = QComboBox()
+        self.address_history_model = QStringListModel(self.address_bar)
+        self.address_bar.setModel(self.address_history_model)
         self.address_bar.setEditable(True)
         # Long history entries must not set the toolbar's minimum width.
         self.address_bar.setSizeAdjustPolicy(
@@ -396,7 +398,7 @@ class MainWindow(QMainWindow):
         )
         self.address_bar.setMinimumContentsLength(24)
         self.address_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.address_bar.setInsertPolicy(QComboBox.InsertPolicy.InsertAtTop)
+        self.address_bar.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.address_bar.lineEdit().returnPressed.connect(self.on_address_entered)
         self.address_bar.activated.connect(self.on_address_selected)
         address_layout.addWidget(self.address_bar, stretch=1)
@@ -1006,11 +1008,17 @@ class MainWindow(QMainWindow):
         return ""
 
     def load_address_history(self):
-        self.address_bar.blockSignals(True)
-        for folder_path in get_address_folders():
-            if os.path.isdir(folder_path) and self.address_bar.findText(folder_path) < 0:
-                self.address_bar.addItem(folder_path)
-        self.address_bar.blockSignals(False)
+        folders = get_address_folders()
+        self.unavailable_address_paths = {os.path.normcase(path) for path in folders if not os.path.isdir(path)}
+        self.show_address_history(folders, self.current_folder_path)
+
+    def show_address_history(self, folders, current_path):
+        if self.unavailable_address_paths:
+            folders = [path for path in folders if os.path.normcase(path) not in self.unavailable_address_paths]
+        with QSignalBlocker(self.address_bar):
+            self.address_history_model.setStringList(folders)
+            if current_path:
+                self.address_bar.setCurrentText(os.path.normpath(current_path))
 
     def restore_last_folder(self):
         if get_startup_behavior() != "last_used":
@@ -1046,15 +1054,9 @@ class MainWindow(QMainWindow):
         if not folder_path:
             return
 
-        self.address_bar.blockSignals(True)
-        idx = self.address_bar.findText(folder_path)
-        if idx >= 0:
-            self.address_bar.setCurrentIndex(idx)
-        else:
-            self.address_bar.insertItem(0, folder_path)
-            self.address_bar.setCurrentIndex(0)
-        self.address_bar.blockSignals(False)
-        add_address_folder(folder_path)
+        folders = add_address_folder(folder_path)
+        self.unavailable_address_paths.discard(os.path.normcase(folder_path))
+        self.show_address_history(folders, folder_path)
         set_last_folder(folder_path)
 
         if not add_to_navigation_history:
@@ -3496,6 +3498,7 @@ class MainWindow(QMainWindow):
     def open_settings_dialog(self):
         dialog = SettingsDialog(self)
         dialog.thumbnail_size_changed.connect(self.thumbnail_view.set_thumbnail_size)
+        dialog.visited_folder_limit_changed.connect(self.load_address_history)
         dialog.resource_settings_changed.connect(self.apply_resource_settings)
         dialog.theme_changed.connect(apply_theme)
         dialog.image_settings_changed.connect(self.apply_image_settings)

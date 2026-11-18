@@ -167,6 +167,10 @@ navigate folder history or open the parent folder. Their tooltips show the
 existing keyboard shortcuts. These buttons are compact, and the address field
 can shrink in narrow windows even when the folder history contains long paths.
 
+In **Settings → Folder history**, choose how many visited folders the address
+bar remembers and how many destinations **Copy To** and **Move To** share.
+Both default to 30. Lowering a limit keeps the most recently used folders.
+
 Renaming briefly retries if an image reader still has the file open. The Rename
 window stays responsive, and Cancel stops further attempts. Name collisions keep
 the attempted name editable in the same dialog.

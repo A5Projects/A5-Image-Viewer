@@ -45,6 +45,34 @@ class ConfigPathTests(unittest.TestCase):
         self.assertEqual(config["recent_folders"], [expected])
         self.assertEqual(config["address_folders"], [expected])
 
+    def test_legacy_history_defaults_to_30_and_can_be_extended_before_next_use(self):
+        folders = [os.path.join(self.temp_dir.name, str(n)) for n in range(45)]
+        file_ops.save_config({"address_folders": folders[:20], "recent_folders": folders})
+        self.assertEqual(file_ops.get_folder_history_limits(), (30, 30))
+        self.assertEqual(file_ops.get_recent_folders(), folders[:30])
+        self.assertEqual(file_ops.load_config()["recent_folders"], folders)
+
+        file_ops.set_folder_history_limits(40, 45)
+        for folder in reversed(folders):
+            file_ops.add_address_folder(folder)
+        self.assertEqual(file_ops.get_address_folders(), folders[:40])
+        self.assertEqual(file_ops.get_recent_folders(), folders)
+        file_ops.add_recent_folder(folders[-1])
+        file_ops.set_folder_history_limits(2, 3)
+        config = file_ops.load_config()
+        self.assertEqual(config["address_folders"], folders[:2])
+        self.assertEqual(config["recent_folders"], [folders[-1], *folders[:2]])
+
+    def test_invalid_history_limits_fall_back_and_deduplication_precedes_eviction(self):
+        first, second = [os.path.join(self.temp_dir.name, name) for name in ("one", "two")]
+        file_ops.save_config({"address_folders_limit": False, "recent_folders_limit": "many",
+                              "recent_folders": [first, first, "", second]})
+        self.assertEqual(file_ops.get_folder_history_limits(), (30, 30))
+        file_ops.set_folder_history_limits(1, 2)
+        self.assertEqual(file_ops.get_recent_folders(), [first, second])
+        file_ops.add_recent_folder(second)
+        self.assertEqual(file_ops.get_recent_folders(), [second, first])
+
     def test_default_config_is_in_workspace_for_source_runs(self):
         expected = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(file_ops.__file__))),

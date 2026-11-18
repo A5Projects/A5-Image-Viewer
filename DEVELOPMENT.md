@@ -787,8 +787,9 @@ Important keys and defaults:
 
 | Key | Default / purpose |
 | --- | --- |
-| `recent_folders` | `[]`; Copy To/Move To history |
-| `address_folders` | `[]`; address bar history, capped at 20 |
+| `recent_folders` | Shared Copy To/Move To history, newest first |
+| `address_folders` | Address bar history, newest first |
+| `recent_folders_limit`, `address_folders_limit` | Separate folder counts, each defaulting to 30 (1–10,000) |
 | `last_folder` | empty; startup restoration |
 | `favorite_folders` | ordered full paths |
 | `favorite_display_names` | normalized path to alias map |

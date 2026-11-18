@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout, QSpinBox, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_ops import (RESOURCE_PROFILES, get_thumbnail_size, set_thumbnail_size,
+                            MAX_FOLDER_HISTORY_LIMIT, get_folder_history_limits, set_folder_history_limits,
                             get_gif_playback_settings, set_gif_playback_settings,
                             get_startup_behavior, set_startup_behavior,
                             get_resource_settings, set_resource_settings,
@@ -16,6 +17,7 @@ from ui.about_dialog import install_about_shortcut, show_about
 class SettingsDialog(QDialog):
     thumbnail_size_changed = pyqtSignal(int)
     gif_playback_changed = pyqtSignal(bool, bool)
+    visited_folder_limit_changed = pyqtSignal()
     resource_settings_changed = pyqtSignal(object)
     theme_changed = pyqtSignal(str)
     image_settings_changed = pyqtSignal(object)
@@ -63,6 +65,19 @@ class SettingsDialog(QDialog):
         )
         form_layout.addRow(self.smooth_check)
         layout.addWidget(general_group)
+
+        history_group = QGroupBox("Folder history")
+        history_layout = QFormLayout(history_group)
+        visited, destinations = get_folder_history_limits()
+        self.visited_limit_spin = QSpinBox()
+        self.visited_limit_spin.setRange(1, MAX_FOLDER_HISTORY_LIMIT)
+        self.visited_limit_spin.setValue(visited)
+        self.destination_limit_spin = QSpinBox()
+        self.destination_limit_spin.setRange(1, MAX_FOLDER_HISTORY_LIMIT)
+        self.destination_limit_spin.setValue(destinations)
+        history_layout.addRow("Visited folders:", self.visited_limit_spin)
+        history_layout.addRow("Copy To / Move To destinations:", self.destination_limit_spin)
+        layout.addWidget(history_group)
         
         # Thumbnail Settings
         thumb_group = QGroupBox("Thumbnails")
@@ -213,6 +228,12 @@ class SettingsDialog(QDialog):
         new_theme = self.theme_combo.currentData()
         old_size = get_thumbnail_size()
         new_size = self.thumb_slider.value()
+        old_limits = get_folder_history_limits()
+        limits = self.visited_limit_spin.value(), self.destination_limit_spin.value()
+        if limits != old_limits:
+            set_folder_history_limits(*limits)
+            if limits[0] != old_limits[0]:
+                self.visited_folder_limit_changed.emit()
         gif_settings = self.animate_gifs_check.isChecked(), self.gif_preview_only_check.isChecked()
         if gif_settings != get_gif_playback_settings():
             set_gif_playback_settings(*gif_settings)

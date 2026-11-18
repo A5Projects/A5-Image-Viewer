@@ -3,6 +3,7 @@ import json
 import shutil
 import sys
 import time
+from itertools import chain
 from typing import List, Dict, Any
 
 
@@ -17,6 +18,8 @@ def default_config_file() -> str:
 
 
 CONFIG_FILE = default_config_file()
+DEFAULT_FOLDER_HISTORY_LIMIT = 30
+MAX_FOLDER_HISTORY_LIMIT = 10_000
 
 RESOURCE_PROFILES = {
     "conservative": {
@@ -145,53 +148,62 @@ def normalize_folder_path(folder_path: str) -> str:
         return ""
     return os.path.normpath(os.path.abspath(os.path.expanduser(folder_path.strip())))
 
-def _folder_path_key(folder_path: str) -> str:
-    return os.path.normcase(normalize_folder_path(folder_path))
+def _history_limit(value):
+    if type(value) is int and 1 <= value <= MAX_FOLDER_HISTORY_LIMIT:
+        return value
+    return DEFAULT_FOLDER_HISTORY_LIMIT
 
-def _normalized_folder_list(folder_paths) -> List[str]:
+def get_folder_history_limits() -> tuple[int, int]:
+    config = load_config()
+    return (_history_limit(config.get("address_folders_limit")),
+            _history_limit(config.get("recent_folders_limit")))
+
+def _folder_history(config, key, newest=()) -> List[str]:
+    limit = _history_limit(config.get(f"{key}_limit"))
+    stored = config.get(key)
+    folders = stored if isinstance(stored, list) else []
     normalized = []
     seen = set()
-    for folder_path in folder_paths or []:
+    for folder_path in chain(newest, folders):
         path = normalize_folder_path(folder_path)
-        key = os.path.normcase(path)
-        if path and key not in seen:
+        path_key = os.path.normcase(path)
+        if path and path_key not in seen:
             normalized.append(path)
-            seen.add(key)
+            seen.add(path_key)
+            if len(normalized) == limit:
+                break
     return normalized
 
-def add_recent_folder(folder_path: str):
+def set_folder_history_limits(visited: int, destinations: int):
+    config = load_config()
+    for key, limit in (("address_folders", visited), ("recent_folders", destinations)):
+        setting = f"{key}_limit"
+        old_limit = _history_limit(config.get(setting))
+        config[setting] = _history_limit(limit)
+        if config[setting] != old_limit:
+            config[key] = _folder_history(config, key)
+    save_config(config)
+
+def _add_history_folder(key, folder_path):
     folder_path = normalize_folder_path(folder_path)
     if not folder_path:
-        return
+        return []
     config = load_config()
-    key = _folder_path_key(folder_path)
-    recent = [
-        path for path in _normalized_folder_list(config.get("recent_folders", []))
-        if _folder_path_key(path) != key
-    ]
-    recent.insert(0, folder_path)
-    config["recent_folders"] = recent
+    config[key] = _folder_history(config, key, (folder_path,))
     save_config(config)
+    return config[key]
+
+def add_recent_folder(folder_path: str):
+    _add_history_folder("recent_folders", folder_path)
 
 def get_recent_folders() -> List[str]:
-    return _normalized_folder_list(load_config().get("recent_folders", []))
+    return _folder_history(load_config(), "recent_folders")
 
 def add_address_folder(folder_path: str):
-    folder_path = normalize_folder_path(folder_path)
-    if not folder_path:
-        return
-    config = load_config()
-    key = _folder_path_key(folder_path)
-    recent = [
-        path for path in _normalized_folder_list(config.get("address_folders", []))
-        if _folder_path_key(path) != key
-    ]
-    recent.insert(0, folder_path)
-    config["address_folders"] = recent[:20]
-    save_config(config)
+    return _add_history_folder("address_folders", folder_path)
 
 def get_address_folders() -> List[str]:
-    return _normalized_folder_list(load_config().get("address_folders", []))
+    return _folder_history(load_config(), "address_folders")
 
 def add_favorite_folder(folder_path: str):
     config = load_config()
