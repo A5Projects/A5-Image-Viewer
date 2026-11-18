@@ -215,6 +215,16 @@ the setting. Images remain at full resolution. Images above **256 MiB decoded**
 are skipped by viewer/Crop preloading and loaded only when opened; ordinary
 images retain preloading.
 
+When you return to a folder or press F5, A5 checks its file listing and reuses
+image thumbnails from the current session. New and changed images are decoded
+again. Scrolling brings cached thumbnails into view on demand. The first visit
+also compresses small previews in the background for later use.
+
+The thumbnail history uses up to a quarter of the thumbnail RAM budget in
+**Settings → Resource Usage**, capped at 256 MiB. Older entries are evicted as
+it fills. The history disappears when you close A5 and creates no database on
+disk. Changing the thumbnail size starts a fresh history.
+
 **Smooth downscaling** in Settings is enabled by default for the preview and
 fullscreen/windowed image viewer. It uses CPU rendering below 100% zoom;
 100% and larger remain unsmoothed. It can be disabled, and does not enable GPU

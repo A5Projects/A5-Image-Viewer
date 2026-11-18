@@ -54,6 +54,7 @@ class ConvertWorker(QThread):
         self.quality = quality
         self.keep_date = keep_date
         self.delete_orig = delete_orig
+        self.changed_paths = []
         self._is_running = True
 
     def stop(self):
@@ -106,6 +107,7 @@ class ConvertWorker(QThread):
                         img.save(new_path, format=save_format)
                     else:
                         img.save(new_path)
+                self.changed_paths.append(new_path)
                     
                 if self.keep_date:
                     try:
@@ -117,6 +119,7 @@ class ConvertWorker(QThread):
                 if self.delete_orig and not same_file(file_path, new_path):
                     try:
                         os.remove(file_path)
+                        self.changed_paths.append(file_path)
                     except Exception:
                         pass
                         
@@ -150,6 +153,7 @@ class ConvertDialog(QDialog):
         self.setWindowTitle("Batch Convert / Rotate")
         self.resize(520, 500)
         self.files = files
+        self.changed_paths = []
         
         layout = QVBoxLayout(self)
         
@@ -326,6 +330,7 @@ class ConvertDialog(QDialog):
             self.files, target_folder, appendix, fmt, rotate_op, quality, 
             self.keep_date_cb.isChecked(), self.delete_orig_cb.isChecked()
         )
+        self.changed_paths = self.worker.changed_paths
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)

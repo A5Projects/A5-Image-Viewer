@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtGui import QFileSystemModel
 from PyQt6.QtCore import Qt, QDir, QSize, QRectF, QPointF, QUrl, QMimeData, QObject, QTimer, QThread, pyqtSignal, QEvent, QItemSelectionModel, QFileInfo
 from ui.thumbnail_view import (ThumbnailView, PATH_ROLE, KIND_ROLE, EXT_ROLE, SIZE_ROLE,
-                               MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, thumbnail_item_label)
+                               MODIFIED_ROLE, WIDTH_ROLE, HEIGHT_ROLE, FINGERPRINT_ROLE,
+                               thumbnail_fingerprint, thumbnail_item_label)
 from ui.image_viewer import ImageViewer
 from ui.dialogs import CopyMoveDialog, RenameDialog
 from ui.folder_shortcuts import FolderShortcutList, ShrinkableButtonStrip
@@ -1344,6 +1345,9 @@ class MainWindow(QMainWindow):
                     ]
 
                 copied_paths = [destinations[source_path] for source_path in successful_sources]
+                moved_sources = set(successful_sources) if move_files else set()
+                for source, target in destinations.items():
+                    self.invalidate_transferred_thumbnail(source, target, source in moved_sources)
                 if result is False:
                     failed_paths = [
                         source_path
@@ -1371,6 +1375,15 @@ class MainWindow(QMainWindow):
             action = "move" if move_files else "copy"
             QMessageBox.warning(self, "File Transfer", f"Failed to {action} {len(failed_paths)} item(s).")
         return copied_paths
+
+    def invalidate_transferred_thumbnail(self, source, target, moved):
+        # A shell copy can retain both the size and timestamp of existing files,
+        # even if a later file in the same operation was skipped or cancelled.
+        history = self.thumbnail_view.thumbnail_history
+        discard = history.discard_tree if os.path.isdir(target) else history.discard
+        discard(target)
+        if moved:
+            discard(source)
 
     def transfer_dialog_parent(self):
         if (
@@ -1444,6 +1457,7 @@ class MainWindow(QMainWindow):
                             not existed_before[item.source] and
                             os.path.exists(item.target)
                         )
+                    self.invalidate_transferred_thumbnail(item.source, item.target, move_files and succeeded)
                     if succeeded:
                         successful_sources.append(item.source)
                         copied_paths.append(item.target)
@@ -1805,6 +1819,7 @@ class MainWindow(QMainWindow):
                     if not self.modified_pixmap.save(new_path, quality=-1):
                         QMessageBox.warning(self, "Error", "Failed to save the image to the specified path.")
                         return False
+                    self.update_saved_thumbnail_item(new_path)
                 else:
                     return False
             self.image_modified = False
@@ -2699,21 +2714,28 @@ class MainWindow(QMainWindow):
                 self.fullscreen_viewer.activateWindow()
                 self.fullscreen_viewer.setFocus()
 
+    @staticmethod
+    def update_thumbnail_file_stats(item, file_path):
+        try:
+            stat = os.stat(file_path)
+        except OSError:
+            item.setData(None, FINGERPRINT_ROLE)
+            return
+        item.setData(stat.st_size, SIZE_ROLE)
+        item.setData(stat.st_mtime, MODIFIED_ROLE)
+        item.setData(thumbnail_fingerprint(stat), FINGERPRINT_ROLE)
+
     def update_saved_thumbnail_item(self, file_path, request_refresh=True):
         item = self.thumbnail_view.item_for_path(file_path)
         if item is None:
+            self.thumbnail_view.thumbnail_history.discard(file_path)
             return
 
         _, name = os.path.split(file_path)
         _, ext = os.path.splitext(name)
         ext = ext[1:].lower()
         item.setData(ext, EXT_ROLE)
-        try:
-            stat = os.stat(file_path)
-            item.setData(stat.st_size, SIZE_ROLE)
-            item.setData(stat.st_mtime, MODIFIED_ROLE)
-        except OSError:
-            pass
+        self.update_thumbnail_file_stats(item, file_path)
         if request_refresh:
             self.thumbnail_view.request_thumbnail_refresh(file_path)
         self.update_status_bar()
@@ -2866,7 +2888,7 @@ class MainWindow(QMainWindow):
         if record is None:
             return None
 
-        _, file_name, ext, modified_time, kind, file_size = record
+        _, file_name, ext, modified_time, kind, file_size, fingerprint = record
         icon = self.thumbnail_view._icon_for_kind(kind)
         label = thumbnail_item_label(file_name, ext, kind, file_size)
         item = QStandardItem(icon, label)
@@ -2875,6 +2897,7 @@ class MainWindow(QMainWindow):
         item.setData(ext, EXT_ROLE)
         item.setData(file_size, SIZE_ROLE)
         item.setData(modified_time, MODIFIED_ROLE)
+        item.setData(fingerprint, FINGERPRINT_ROLE)
         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         return item
 
@@ -2909,10 +2932,12 @@ class MainWindow(QMainWindow):
             stat = os.stat(file_path)
             modified_time = stat.st_mtime
             file_size = stat.st_size
+            fingerprint = thumbnail_fingerprint(stat)
         except OSError:
             modified_time = 0
             file_size = 0
-        return (file_path, file_name, ext, modified_time, kind, file_size)
+            fingerprint = None
+        return (file_path, file_name, ext, modified_time, kind, file_size, fingerprint)
 
     def insertion_row_for_thumbnail_item(self, new_item):
         model = self.thumbnail_view.model()
@@ -3007,6 +3032,7 @@ class MainWindow(QMainWindow):
         if item is not None:
             self.update_saved_thumbnail_item(file_path)
             return
+        self.thumbnail_view.thumbnail_history.discard(file_path)
         current_folder = (
             os.path.abspath(self.current_folder_path)
             if self.current_folder_path else ""
@@ -3202,12 +3228,7 @@ class MainWindow(QMainWindow):
                 extension = os.path.splitext(new_name)[1][1:].lower()
                 item.setData(new_path, PATH_ROLE)
                 item.setData(extension, EXT_ROLE)
-                try:
-                    stat = os.stat(new_path)
-                    item.setData(stat.st_size, SIZE_ROLE)
-                    item.setData(stat.st_mtime, MODIFIED_ROLE)
-                except OSError:
-                    pass
+                self.update_thumbnail_file_stats(item, new_path)
                 width = item.data(WIDTH_ROLE)
                 height = item.data(HEIGHT_ROLE)
                 item.setText(thumbnail_item_label(
@@ -3251,12 +3272,7 @@ class MainWindow(QMainWindow):
         ext = ext[1:].lower()
         kind = item.data(KIND_ROLE)
 
-        try:
-            stat = os.stat(new_path)
-            item.setData(stat.st_size, SIZE_ROLE)
-            item.setData(stat.st_mtime, MODIFIED_ROLE)
-        except OSError:
-            pass
+        self.update_thumbnail_file_stats(item, new_path)
 
         item.setData(new_path, PATH_ROLE)
         self.thumbnail_view.rename_indexed_path(old_path, new_path, item)
@@ -3487,5 +3503,8 @@ class MainWindow(QMainWindow):
             return
             
         dialog = ConvertDialog(files, self)
-        if dialog.exec():
+        accepted = dialog.exec()
+        for path in dialog.changed_paths:
+            self.thumbnail_view.thumbnail_history.discard(path)
+        if accepted or dialog.changed_paths:
             self.refresh_folder()

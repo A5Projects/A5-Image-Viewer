@@ -397,6 +397,16 @@ The thumbnail system is deliberately demand-aware:
 6. An `OrderedDict` cache tracks estimated byte cost and evicts old, unpinned
    entries when the configured limit is reached.
 
+`ui/thumbnail_history.py` keeps a compressed, byte-limited LRU across folder
+visits in the same process. Up to a quarter of the configured thumbnail budget
+(256 MiB maximum) is reserved for history, with the rest for the active grid.
+Folder scans validate each image against its path, thumbnail size, file size,
+nanosecond modification time, and creation time on Windows (change time on
+Unix). Workers pack scaled opaque images as JPEGs and transparent images as
+PNGs. Cache hits restore dimensions during the scan and unpack pixels when
+requested. Explicit file edits invalidate affected entries even when they keep
+timestamps. Folder mosaics and video frames still use their own loaders.
+
 Visible rows are pinned against eviction. If the cache is full, background fill
 pauses while requested/visible work can still proceed.
 
@@ -967,8 +977,8 @@ Medium Dark, and Light themes.
 - Core file copy/move/delete uses the legacy `SHFileOperationW` API rather than
   full COM `IFileOperation` integration.
 - Send To intentionally omits COM Shell handlers.
-- The application has no persistent thumbnail database; reopening a folder can
-  require decoding again.
+- Image thumbnail history is process-local. Evicted images and the first visit
+  after a restart require decoding from disk.
 - PDF support depends on what the Qt image stack can decode and is view-only.
 - Video support depends on the installed Qt Multimedia/platform codecs.
 - Animated/multi-frame editing is limited; batch transform refuses it, while
