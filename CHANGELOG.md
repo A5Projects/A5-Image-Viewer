@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-18 — v1.0.0-20261118
+
+- Reopening a folder reuses unchanged thumbnails from a bounded RAM cache.
+  The cache is cleared when A5 closes and creates no thumbnail database on disk.
+  Image thumbnails and folder previews share worker and memory limits when
+  switching folders. The grid also updates faster after bulk file operations.
+- Batch Convert can keep the full ComfyUI workflow, API prompt and compact
+  prompt/settings summary when converting still PNGs to WebP. A5 verifies
+  the metadata before replacing the destination.
+- Batch Convert preserves frame timing and looping when converting animated
+  GIFs and WebPs to animated WebP. Optional GIF playback animates visible
+  thumbnails and the selected preview, or just the preview. Playback starts off.
+  Video previews also start off and release the player when disabled.
+- Image Adjust asks before closing with unsaved changes, with a choice to
+  remember the action for the session. Adjusted PNGs retain their text metadata.
+  Resize to Fill uses less working memory, and Adjust exports, Batch Convert
+  and Rotate honor the configured decoded-image limit.
+- The visited-folder history and shared Copy To / Move To history now have
+  separate limits. Both default to 30 and can be set from 1 to 10,000.
+  A5 checks offline history entries when opened. Filtering restricts file
+  operations to visible selected items.
+
 ## 2026-10-20 — v1.0.0-20261020
 
 - Added signed-angle rotation to Image Adjust's bottom row and Crop Board's
