@@ -30,7 +30,8 @@ from utils.file_ops import (copy_files as copy_files_batch, move_files as move_f
                             get_favorite_display_name, set_favorite_display_name,
                             get_favorite_sort_setting, set_favorite_sort_setting,
                             set_last_folder, get_last_folder, get_startup_behavior, get_thumbnail_size,
-                            get_resource_settings, get_ui_theme, get_gif_playback_settings)
+                            get_resource_settings, get_disk_cache_settings,
+                            get_ui_theme, get_gif_playback_settings)
 from utils import windows_shell
 from ui.about_dialog import install_about_shortcut
 from utils.application_launch import start_new_instance
@@ -590,9 +591,11 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         
         self.resource_settings = get_resource_settings()
+        self.disk_cache_settings = get_disk_cache_settings()
         self.thumbnail_view = ThumbnailView()
         self.thumbnail_view.set_thumbnail_size(get_thumbnail_size())
         self.thumbnail_view.apply_resource_settings(self.resource_settings)
+        self.thumbnail_view.apply_disk_cache_settings(self.disk_cache_settings)
         self.apply_gif_playback(*get_gif_playback_settings())
         self.thumbnail_view.selectionModel().currentChanged.connect(self.on_thumbnail_selected)
         self.thumbnail_view.doubleClicked.connect(self.open_thumbnail_fullscreen)
@@ -3557,10 +3560,19 @@ class MainWindow(QMainWindow):
         dialog.thumbnail_size_changed.connect(self.thumbnail_view.set_thumbnail_size)
         dialog.visited_folder_limit_changed.connect(self.load_address_history)
         dialog.resource_settings_changed.connect(self.apply_resource_settings)
+        dialog.disk_cache_settings_changed.connect(self.apply_disk_cache_settings)
+        dialog.clear_disk_cache_requested.connect(self.clear_disk_cache)
         dialog.theme_changed.connect(apply_theme)
         dialog.image_settings_changed.connect(self.apply_image_settings)
         dialog.gif_playback_changed.connect(self.apply_gif_playback)
         dialog.exec()
+
+    def apply_disk_cache_settings(self, settings):
+        self.disk_cache_settings = settings
+        self.thumbnail_view.apply_disk_cache_settings(settings)
+
+    def clear_disk_cache(self):
+        self.thumbnail_view.clear_disk_cache()
 
     def apply_gif_playback(self, animate_gifs, only_in_preview):
         self.preview_viewer.set_gif_playback(animate_gifs)

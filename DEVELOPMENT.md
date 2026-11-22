@@ -30,10 +30,10 @@ The practical priorities are:
 - Prefer native Windows behavior for file operations and associations where it
   adds meaningful convenience.
 - Keep the interface functional and compact. Dark is the default theme, with
-  Medium Dark and Light alternatives.
-- Do not add a database or persistent thumbnail index without a compelling
-  reason. The current application scans the active folder and caches decoded
-  thumbnails only in memory.
+  nine additional dark and light palettes.
+- Keep persistent state simple and GPU-free. Static image thumbnails use an
+  optional, bounded local SQLite WAL cache of canonical 256 px thumbnails (on by
+  default, 1 GiB cap) alongside the bounded in-memory L1/L2 caches.
 
 This is not intended to match the complete editing or cataloguing surface of
 XnView, FastStone, Photoshop, or similar applications.
@@ -222,7 +222,11 @@ deletes/replaces those runtime files but deliberately preserves the generated
 ### Browsing and viewing
 
 - `ui/thumbnail_view.py`: folder scanning, item model, thumbnail/folder-preview
-  workers, in-memory cache, filtering, selection painting, and file drag source.
+  workers, L1 cache, filtering, selection painting, and file drag source.
+- `ui/thumbnail_history.py`: L2 compressed in-memory LRU cache (`PackedThumbnail`
+  and `CANONICAL_THUMBNAIL_SIZE = 256`).
+- `ui/thumbnail_disk_cache.py`: L3 SQLite WAL persistent disk cache with pooled
+  read-only connections, a batched daemon writer, and LRU byte eviction.
 - `ui/image_viewer.py`: small reusable `QGraphicsView` pixmap viewer used for
   previewing and basic zoom/pan behavior.
 - `ui/fullscreen_viewer.py`: fullscreen dialog, pixel selection, HUD,
@@ -398,15 +402,22 @@ The thumbnail system is deliberately demand-aware:
 6. An `OrderedDict` cache tracks estimated byte cost and evicts old, unpinned
    entries when the configured limit is reached.
 
-`ui/thumbnail_history.py` keeps a compressed, byte-limited LRU across folder
-visits in the same process. Up to a quarter of the configured thumbnail budget
-(256 MiB maximum) is reserved for history, with the rest for the active grid.
-Folder scans validate each image against its path, thumbnail size, file size,
-nanosecond modification time, and creation time on Windows (change time on
-Unix). Workers pack scaled opaque images as JPEGs and transparent images as
-PNGs. Cache hits restore dimensions during the scan and unpack pixels when
-requested. Explicit file edits invalidate affected entries even when they keep
-timestamps. Folder mosaics and video frames still use their own loaders.
+`ui/thumbnail_history.py` (L2) and `ui/thumbnail_disk_cache.py` (L3) store
+packed static image thumbnails at a canonical 256 px bound (`CANONICAL_THUMBNAIL_SIZE`),
+so changing the thumbnail slider rescales cached thumbnails without re-reading
+original files from disk. L2 uses up to a quarter of the configured thumbnail
+budget (256 MiB maximum) across folder visits in the same process, while the
+remainder serves the active grid (L1). L3 defaults to enabled with a 1024 MiB
+cap in a local SQLite WAL database (`%LOCALAPPDATA%\A5ImageViewer\thumbnails.db`,
+configurable in Settings), opening lazily on worker threads (`mmap_size = 0`,
+small SQLite page cache, no GUI-thread DB I/O) with one low-priority batched
+writer and automatic corruption recovery. Folder scans fetch metadata for the
+active folder off the GUI thread and validate each image against its path,
+canonical size, file size, nanosecond modification time, and creation time on
+Windows (change time on Unix). Workers pack opaque images as JPEGs and
+transparent images as PNGs. Explicit edits, renames, transfers, refreshes, and
+deletions invalidate L2 and L3 immediately. Folder mosaics and video frames
+still use their own loaders.
 
 Visible rows are pinned against eviction. If the cache is full, background fill
 pauses while requested/visible work can still proceed.
@@ -822,7 +833,10 @@ Important keys and defaults:
 | `favorite_sort_settings` | favorite path to name/date/type order |
 | `startup_behavior` | `last_used`; alternative `empty` |
 | `thumbnail_size` | `200` pixels |
-| `ui_theme` | `dark`; also `medium_dark`, `light` |
+| `disk_cache_enabled` | `true`; persists canonical 256 px thumbnails to SQLite |
+| `disk_cache_max_mb` | `1024`; integer 64..16384 |
+| `disk_cache_dir` | empty; uses `%LOCALAPPDATA%\A5ImageViewer` (or test config `cache/` when `CONFIG_FILE` is redirected) |
+| `ui_theme` | `dark`; also `medium_dark`, `oled_black`, `midnight_slate`, `warm_charcoal`, `forest`, `dusk_plum`, `light`, `warm_paper`, `cool_mist` |
 | `resource_profile` | `balanced`; also conservative/performance/custom |
 | `custom_thumbnail_workers` | `4`, clamped 1..8 |
 | `custom_thumbnail_cache_mb` | `2048`, clamped 256..5120 |
@@ -878,7 +892,10 @@ application palette and stylesheet in place; it must not rebuild models, flush
 thumbnail caches, decode images, or change selection.
 
 Theme tokens cover surfaces, text, disabled state, selection, controls, focus,
-checkboxes, scrollbars, splitters, and thumbnail borders. Scrollbar arrows are
+checkboxes, scrollbars, splitters, and thumbnail borders (including
+theme-derived thumbnail selection fills in `ThumbnailItemDelegate`). Valid theme
+identifiers live in `utils/file_ops.py` (`UI_THEME_NAMES` / `VALID_UI_THEMES`)
+and map to palettes in `ui/theme.py`. Scrollbar arrows are
 small recolored standard Qt icons written to a process-local `QTemporaryDir`.
 
 Image canvases remain explicitly dark in every theme, and fullscreen remains
@@ -960,6 +977,7 @@ These are the most important engineering constraints for future changes:
 | `test_browser_navigation.py` | folder switching with active thumbnail/preview decoders, arrow versus folder selection, Alt filename/digit cycling, filters, wrapping, shortcut/text-entry isolation, and address navigation buttons |
 | `test_thumbnail_filtering.py` | type filters, PDF boundary, video labels |
 | `test_thumbnail_decode_budget.py` | worker and memory limits across rapid folder switches, shared mosaic budgets, file-handle release, late results and window destruction |
+| `test_thumbnail_disk_cache.py` | SQLite WAL L3 cache persistence, folder metadata overlay, LRU eviction, corruption recovery, concurrency, canonical resize, invalidation, and Settings controls |
 | `test_transfer_conflicts.py` | async preflight and conflict choices/naming |
 | `test_windows_shell.py` | Shell verbs, Send To, print, wallpaper, platform guards |
 
@@ -1026,8 +1044,9 @@ Medium Dark, and Light themes.
 - Core file copy/move/delete uses the legacy `SHFileOperationW` API rather than
   full COM `IFileOperation` integration.
 - Send To intentionally omits COM Shell handlers.
-- Image thumbnail history is process-local. Evicted images and the first visit
-  after a restart require decoding from disk.
+- Video thumbnails, animated GIF playback frames, and 2×2 folder mosaics remain
+  process-local; only static image thumbnails are stored in the optional SQLite
+  disk cache.
 - PDF support depends on what the Qt image stack can decode and is view-only.
 - Video support depends on the installed Qt Multimedia/platform codecs.
 - Animated/multi-frame editing is limited; batch transform refuses it, while

@@ -9,6 +9,8 @@ from threading import Lock
 from PyQt6.QtCore import QBuffer, QIODevice
 from PyQt6.QtGui import QImage
 
+CANONICAL_THUMBNAIL_SIZE = 256
+
 
 @dataclass(frozen=True, slots=True)
 class PackedThumbnail:
@@ -51,11 +53,13 @@ class ThumbnailHistory:
     # Includes the LRU node, fingerprint, encoded bytes object, and bookkeeping.
     _ENTRY_OVERHEAD = 512
 
-    def __init__(self, byte_limit):
+    def __init__(self, byte_limit, *, on_discard=None, on_discard_tree=None):
         self._entries = OrderedDict()
         self._lock = Lock()
         self._byte_count = 0
         self._byte_limit = max(0, int(byte_limit))
+        self._on_discard = on_discard
+        self._on_discard_tree = on_discard_tree
 
     @property
     def byte_count(self):
@@ -97,6 +101,8 @@ class ThumbnailHistory:
         key = os.path.normcase(os.path.normpath(path))
         with self._lock:
             self._remove(key)
+        if self._on_discard is not None:
+            self._on_discard(path)
 
     def discard_tree(self, path):
         key = os.path.normcase(os.path.normpath(path))
@@ -105,6 +111,8 @@ class ThumbnailHistory:
             matches = [entry for entry in self._entries if entry == key or entry.startswith(prefix)]
             for entry in matches:
                 self._remove(entry)
+        if self._on_discard_tree is not None:
+            self._on_discard_tree(path)
 
     def clear(self):
         with self._lock:

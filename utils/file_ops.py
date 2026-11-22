@@ -20,6 +20,23 @@ def default_config_file() -> str:
 CONFIG_FILE = default_config_file()
 DEFAULT_FOLDER_HISTORY_LIMIT = 30
 MAX_FOLDER_HISTORY_LIMIT = 10_000
+DEFAULT_DISK_CACHE_MB = 1024
+MIN_DISK_CACHE_MB = 64
+MAX_DISK_CACHE_MB = 16384
+
+UI_THEME_NAMES = (
+    ("dark", "Dark"),
+    ("medium_dark", "Medium Dark"),
+    ("oled_black", "OLED Black"),
+    ("midnight_slate", "Midnight Slate"),
+    ("warm_charcoal", "Warm Charcoal"),
+    ("forest", "Forest"),
+    ("dusk_plum", "Dusk Plum"),
+    ("light", "Light"),
+    ("warm_paper", "Warm Paper"),
+    ("cool_mist", "Cool Mist"),
+)
+VALID_UI_THEMES = frozenset(name for name, _ in UI_THEME_NAMES)
 
 RESOURCE_PROFILES = {
     "conservative": {
@@ -305,11 +322,58 @@ def set_gif_playback_settings(animate_gifs: bool, only_in_preview: bool):
 
 def get_ui_theme() -> str:
     theme = load_config().get("ui_theme", "dark")
-    return theme if theme in ("dark", "medium_dark", "light") else "dark"
+    return theme if theme in VALID_UI_THEMES else "dark"
 
 def set_ui_theme(theme: str):
     config = load_config()
-    config["ui_theme"] = theme if theme in ("dark", "medium_dark", "light") else "dark"
+    config["ui_theme"] = theme if theme in VALID_UI_THEMES else "dark"
+    save_config(config)
+
+def default_disk_cache_dir() -> str:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.normpath(os.path.join(base, "A5ImageViewer"))
+
+def resolve_disk_cache_dir(custom_dir: str = "") -> str:
+    normalized = normalize_folder_path(custom_dir)
+    if normalized:
+        return normalized
+    if os.path.normcase(os.path.abspath(CONFIG_FILE)) != os.path.normcase(
+        os.path.abspath(default_config_file())
+    ):
+        return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(CONFIG_FILE)), "cache"))
+    return default_disk_cache_dir()
+
+def get_disk_cache_settings() -> Dict[str, Any]:
+    config = load_config()
+    enabled = config.get("disk_cache_enabled", True)
+    if type(enabled) is not bool:
+        enabled = True
+    max_mb = config.get("disk_cache_max_mb", DEFAULT_DISK_CACHE_MB)
+    if type(max_mb) is not int or not (MIN_DISK_CACHE_MB <= max_mb <= MAX_DISK_CACHE_MB):
+        max_mb = DEFAULT_DISK_CACHE_MB
+    raw_dir = config.get("disk_cache_dir", "")
+    custom_dir = normalize_folder_path(raw_dir) if isinstance(raw_dir, str) else ""
+    return {
+        "enabled": enabled,
+        "max_mb": max_mb,
+        "custom_dir": custom_dir,
+        "effective_dir": resolve_disk_cache_dir(custom_dir),
+    }
+
+def set_disk_cache_settings(enabled: bool, max_mb: int, custom_dir: str = ""):
+    config = load_config()
+    config["disk_cache_enabled"] = bool(enabled)
+    try:
+        clamped_mb = max(MIN_DISK_CACHE_MB, min(MAX_DISK_CACHE_MB, int(max_mb)))
+    except (TypeError, ValueError):
+        clamped_mb = DEFAULT_DISK_CACHE_MB
+    config["disk_cache_max_mb"] = clamped_mb
+    config["disk_cache_dir"] = (
+        normalize_folder_path(custom_dir) if isinstance(custom_dir, str) else ""
+    )
     save_config(config)
 
 def set_fullscreen_hud_visible(visible: bool):

@@ -39,9 +39,10 @@ features work there should not be an enormous job.
 Download the current files from the
 [latest GitHub release](https://github.com/A5Projects/A5-Image-Viewer/releases/latest):
 
-1. Use `A5ImageViewer-Portable.exe` as a completely portable version with
-   no installation or system changes. It creates `config.json` beside the EXE
-   for settings and folder history, but creates nothing else.
+1. Use `A5ImageViewer-Portable.exe` without installation. It keeps settings
+   and folder history in `config.json` beside the EXE. The optional thumbnail
+   cache uses Local AppData by default; change its location or turn off
+   **Save thumbnails to disk** in **Settings → Thumbnails**.
 2. Use `A5ImageViewer-Setup.exe` for a classic installer with optional
    Windows application and file-association integration.
 3. To run from source, use `run.bat`. It creates the Python environment and
@@ -50,6 +51,9 @@ Download the current files from the
 
 Download filenames stay the same between releases. The release tag and About
 window identify the update. Neither executable requires Python.
+
+Settings offers ten themes, including the original Dark, Medium Dark, and
+Light. Switching takes effect without restarting.
 
 If the September 22 download fails on startup with a `QtWidgets` DLL error,
 download the corrected release (`v1.0.0-20260922.1` or later) and run Setup
@@ -233,7 +237,8 @@ are skipped by viewer/Crop preloading and loaded only when opened; ordinary
 images retain preloading.
 
 When you return to a folder or press F5, A5 checks its file listing and reuses
-image thumbnails from the current session. New and changed images are decoded
+cached image thumbnails, including those from previous sessions when disk
+caching is enabled. New and changed images are decoded
 again. Scrolling brings cached thumbnails into view on demand. The first visit
 also compresses small previews in the background for later use.
 
@@ -244,10 +249,14 @@ visible images first priority, then nearby images, then the rest of the
 filtered list moving down and wrapping to the top. Opening a preview or
 viewer image briefly pauses new thumbnail reads.
 
-The thumbnail history uses up to a quarter of the thumbnail RAM budget in
+The in-memory thumbnail history uses up to a quarter of the thumbnail RAM budget in
 **Settings → Resource Usage**, capped at 256 MiB. Older entries are evicted as
-it fills. The history disappears when you close A5 and creates no database on
-disk. Changing the thumbnail size starts a fresh history.
+it fills. Changing the thumbnail size reuses the cached previews.
+
+The separate disk cache starts with a 1 GiB limit and stores static image
+thumbnails in `%LOCALAPPDATA%\A5ImageViewer\thumbnails.db`. In
+**Settings → Thumbnails** you can see its usage, change the limit or folder,
+clear the cache, or turn it off. RAM caching still works when disk caching is off.
 
 Grid thumbnails and folder mosaics share the configured worker count, including
 when you switch folders during loading. A5 also estimates the RAM each decode

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-22 — v1.0.0-20261122
+
+- Unchanged image thumbnails can now be reused after restarting A5. The disk
+  cache is on by default with a 1 GiB limit. In Settings → Thumbnails you can
+  change its size or location, clear it, or turn it off and use RAM only.
+- Changing the thumbnail size reuses cached previews without reopening the
+  original images.
+- Added seven themes: OLED Black, Midnight Slate, Warm Charcoal, Forest, Dusk
+  Plum, Warm Paper, and Cool Mist. Dark remains the default.
+
 ## 2026-11-18 — v1.0.0-20261118.1
 
 - Thumbnail loading follows the latest scroll position within the selected

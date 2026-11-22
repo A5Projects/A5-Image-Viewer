@@ -1,6 +1,7 @@
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout, QSpinBox, QCheckBox)
+                             QPushButton, QComboBox, QSlider, QGroupBox, QFormLayout, QSpinBox, QCheckBox,
+                             QFileDialog, QLineEdit)
 from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_ops import (RESOURCE_PROFILES, get_thumbnail_size, set_thumbnail_size,
                             MAX_FOLDER_HISTORY_LIMIT, get_folder_history_limits, set_folder_history_limits,
@@ -9,9 +10,14 @@ from utils.file_ops import (RESOURCE_PROFILES, get_thumbnail_size, set_thumbnail
                             get_resource_settings, set_resource_settings,
                             get_ui_theme, set_ui_theme,
                             get_viewer_default_mode, set_viewer_default_mode,
-                            get_image_settings, set_image_settings)
+                            get_image_settings, set_image_settings,
+                            MIN_DISK_CACHE_MB, MAX_DISK_CACHE_MB,
+                            get_disk_cache_settings, set_disk_cache_settings,
+                            resolve_disk_cache_dir, normalize_folder_path)
 from utils.image_loading import apply_image_loading_settings
 from ui.theme import THEME_NAMES
+from ui.thumbnail_disk_cache import ThumbnailDiskCache
+from ui.thumbnail_view import format_thumbnail_file_size
 from ui.about_dialog import install_about_shortcut, show_about
 
 class SettingsDialog(QDialog):
@@ -19,6 +25,8 @@ class SettingsDialog(QDialog):
     gif_playback_changed = pyqtSignal(bool, bool)
     visited_folder_limit_changed = pyqtSignal()
     resource_settings_changed = pyqtSignal(object)
+    disk_cache_settings_changed = pyqtSignal(object)
+    clear_disk_cache_requested = pyqtSignal()
     theme_changed = pyqtSignal(str)
     image_settings_changed = pyqtSignal(object)
     
@@ -26,7 +34,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         install_about_shortcut(self, "Settings and dialogs")
         self.setWindowTitle("Settings")
-        self.resize(430, 430)
+        self.resize(580, 670)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
         
         layout = QVBoxLayout(self)
@@ -116,6 +124,62 @@ class SettingsDialog(QDialog):
         gif_layout.addWidget(self.gif_preview_only_check)
         gif_layout.addStretch()
         thumb_layout.addLayout(gif_layout)
+
+        disk_settings = get_disk_cache_settings()
+        self._initial_disk_cache_settings = disk_settings
+
+        disk_row = QHBoxLayout()
+        self.disk_cache_check = QCheckBox("Save thumbnails to disk")
+        self.disk_cache_check.setToolTip(
+            "Keep scaled thumbnails in a local SQLite database so revisited folders "
+            "and thumbnail size changes do not re-read full images."
+        )
+        self.disk_cache_check.setChecked(disk_settings["enabled"])
+        disk_row.addWidget(self.disk_cache_check)
+        disk_row.addStretch()
+        disk_row.addWidget(QLabel("Limit:"))
+        self.disk_cache_limit_spin = QSpinBox()
+        self.disk_cache_limit_spin.setRange(MIN_DISK_CACHE_MB, MAX_DISK_CACHE_MB)
+        self.disk_cache_limit_spin.setSingleStep(128)
+        self.disk_cache_limit_spin.setSuffix(" MiB")
+        self.disk_cache_limit_spin.setValue(disk_settings["max_mb"])
+        disk_row.addWidget(self.disk_cache_limit_spin)
+        thumb_layout.addLayout(disk_row)
+
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("Folder:"))
+        self.disk_cache_dir_edit = QLineEdit()
+        self.disk_cache_dir_edit.setText(disk_settings["custom_dir"])
+        default_dir = resolve_disk_cache_dir("")
+        self.disk_cache_dir_edit.setPlaceholderText(default_dir)
+        self.disk_cache_dir_edit.setToolTip(
+            f"Leave empty for the default local cache folder:\n{default_dir}"
+        )
+        self.disk_cache_dir_edit.textChanged.connect(self.update_disk_cache_usage)
+        folder_row.addWidget(self.disk_cache_dir_edit, 1)
+        self.disk_cache_browse_btn = QPushButton("Browse…")
+        self.disk_cache_browse_btn.setAutoDefault(False)
+        self.disk_cache_browse_btn.clicked.connect(self.browse_disk_cache_dir)
+        folder_row.addWidget(self.disk_cache_browse_btn)
+        self.disk_cache_default_btn = QPushButton("Default")
+        self.disk_cache_default_btn.setAutoDefault(False)
+        self.disk_cache_default_btn.clicked.connect(self.reset_disk_cache_dir)
+        folder_row.addWidget(self.disk_cache_default_btn)
+        thumb_layout.addLayout(folder_row)
+
+        usage_row = QHBoxLayout()
+        self.disk_cache_usage_label = QLabel()
+        usage_row.addWidget(self.disk_cache_usage_label)
+        usage_row.addStretch()
+        self.disk_cache_clear_btn = QPushButton("Clear cache")
+        self.disk_cache_clear_btn.setAutoDefault(False)
+        self.disk_cache_clear_btn.clicked.connect(self.clear_disk_cache)
+        usage_row.addWidget(self.disk_cache_clear_btn)
+        thumb_layout.addLayout(usage_row)
+
+        self.disk_cache_check.toggled.connect(self._update_disk_cache_controls)
+        self._update_disk_cache_controls(disk_settings["enabled"])
+        self.update_disk_cache_usage()
         layout.addWidget(thumb_group)
 
         resource_group = QGroupBox("Resource Usage")
@@ -190,6 +254,47 @@ class SettingsDialog(QDialog):
     def on_slider_changed(self, value):
         self.val_label.setText(f"{value} px")
 
+    def _effective_disk_cache_dir(self):
+        return resolve_disk_cache_dir(self.disk_cache_dir_edit.text())
+
+    def _update_disk_cache_controls(self, enabled):
+        enabled = bool(enabled)
+        self.disk_cache_limit_spin.setEnabled(enabled)
+        self.disk_cache_dir_edit.setEnabled(enabled)
+        self.disk_cache_browse_btn.setEnabled(enabled)
+        self.disk_cache_default_btn.setEnabled(enabled)
+
+    def update_disk_cache_usage(self):
+        used = ThumbnailDiskCache.directory_usage_bytes(self._effective_disk_cache_dir())
+        self.disk_cache_usage_label.setText(f"Used: {format_thumbnail_file_size(used)}")
+
+    def browse_disk_cache_dir(self):
+        start_dir = self._effective_disk_cache_dir()
+        if not os.path.isdir(start_dir):
+            parent_dir = os.path.dirname(start_dir)
+            start_dir = parent_dir if os.path.isdir(parent_dir) else ""
+        chosen = QFileDialog.getExistingDirectory(self, "Select Thumbnail Cache Folder", start_dir)
+        if chosen:
+            self.disk_cache_dir_edit.setText(normalize_folder_path(chosen))
+
+    def reset_disk_cache_dir(self):
+        self.disk_cache_dir_edit.clear()
+        self.update_disk_cache_usage()
+
+    def clear_disk_cache(self):
+        target_dir = self._effective_disk_cache_dir()
+        connected = self.receivers(self.clear_disk_cache_requested) > 0
+        if connected:
+            self.clear_disk_cache_requested.emit()
+        active_dir = (
+            self._initial_disk_cache_settings.get("effective_dir", "")
+            if self._initial_disk_cache_settings.get("enabled")
+            else ""
+        )
+        if not connected or not active_dir or os.path.normcase(target_dir) != os.path.normcase(active_dir):
+            ThumbnailDiskCache.clear_directory(target_dir)
+        self.update_disk_cache_usage()
+
     def on_resource_profile_changed(self):
         profile = self.resource_combo.currentData()
         custom = profile == "custom"
@@ -224,6 +329,7 @@ class SettingsDialog(QDialog):
     def accept(self):
         old_image_settings = get_image_settings()
         old_resources = get_resource_settings()
+        old_disk_cache = get_disk_cache_settings()
         old_theme = get_ui_theme()
         new_theme = self.theme_combo.currentData()
         old_size = get_thumbnail_size()
@@ -247,6 +353,12 @@ class SettingsDialog(QDialog):
         new_image_settings = get_image_settings()
         if new_image_settings != old_image_settings:
             self.image_settings_changed.emit(new_image_settings)
+        set_disk_cache_settings(
+            self.disk_cache_check.isChecked(),
+            self.disk_cache_limit_spin.value(),
+            self.disk_cache_dir_edit.text(),
+        )
+        new_disk_cache = get_disk_cache_settings()
         if self.resource_combo.currentData() == "custom":
             custom_workers = self.worker_spin.value()
             custom_cache = self.cache_spin.value()
@@ -266,6 +378,8 @@ class SettingsDialog(QDialog):
         new_resources = get_resource_settings()
         if new_resources != old_resources:
             self.resource_settings_changed.emit(new_resources)
+        if new_disk_cache != old_disk_cache:
+            self.disk_cache_settings_changed.emit(new_disk_cache)
         if new_theme != old_theme:
             self.theme_changed.emit(new_theme)
         super().accept()

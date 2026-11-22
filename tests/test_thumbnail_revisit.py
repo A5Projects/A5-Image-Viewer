@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QApplication
 from ui import thumbnail_view
 from ui.convert_dialog import ConvertDialog
 from ui.main_window import MainWindow
+from ui.thumbnail_history import CANONICAL_THUMBNAIL_SIZE
 from ui.thumbnail_view import HEIGHT_ROLE, WIDTH_ROLE, ThumbnailView, _read_thumbnail_image
 from utils import file_ops
 
@@ -73,7 +74,7 @@ class ThumbnailRevisitTests(unittest.TestCase):
         Image.new("RGB", (40, 40), "blue").save(other_photo)
         self.load(self.first)
         self.wait_for_thumbnails(photo)
-        self.assertEqual(self.reads(), [(photo, self.view.iconSize().width())])
+        self.assertEqual(self.reads(), [(photo, CANONICAL_THUMBNAIL_SIZE)])
         self.load(self.other)
         self.wait_for_thumbnails(other_photo)
         self.decode.reset_mock()
@@ -118,27 +119,42 @@ class ThumbnailRevisitTests(unittest.TestCase):
         self.load(self.first)
         self.wait_for_thumbnails(changed, kept, added)
         self.assertCountEqual(self.view.visible_image_paths(), map(str, (changed, kept, added)))
-        size = self.view.iconSize().width()
-        self.assertCountEqual(self.reads(), [(changed, size), (added, size)])
+        self.assertCountEqual(
+            self.reads(),
+            [(changed, CANONICAL_THUMBNAIL_SIZE), (added, CANONICAL_THUMBNAIL_SIZE)],
+        )
         self.assertEqual(self.center_color(changed).name(), "#0000ff")
 
-    def test_thumbnail_size_change_regenerates_current_and_revisited_images(self):
+    def test_thumbnail_size_change_rescales_canonical_cache_without_redecoding(self):
         photo = self.first / "wide.png"
         Image.new("RGB", (400, 200), "green").save(photo)
         self.load(self.first)
         self.wait_for_thumbnails(photo)
+        self.assertEqual(self.reads(), [(photo, CANONICAL_THUMBNAIL_SIZE)])
         self.decode.reset_mock()
 
         self.view.set_thumbnail_size(128)
         self.wait_for_thumbnails(photo)
-        self.assertEqual(self.reads(), [(photo, 128)])
+        self.assertEqual(self.reads(), [])
+        small = self.view.item_for_path(str(photo)).icon().pixmap(self.view.iconSize()).toImage()
+        self.assertEqual((small.width(), small.height()), (128, 128))
+        small_center = small.pixelColor(64, 64)
+        self.assertGreaterEqual(small_center.green(), 120)
+        self.assertLessEqual(max(small_center.red(), small_center.blue()), 5)
+        self.assertEqual(small.pixelColor(64, 0).alpha(), 0)
+
         self.load(self.other)
         self.assertEqual(self.view.thumbnail_model.rowCount(), 0)
-        self.decode.reset_mock()
         self.view.set_thumbnail_size(240)
         self.load(self.first)
         self.wait_for_thumbnails(photo)
-        self.assertEqual(self.reads(), [(photo, 240)])
+        self.assertEqual(self.reads(), [])
+        large = self.view.item_for_path(str(photo)).icon().pixmap(self.view.iconSize()).toImage()
+        self.assertEqual((large.width(), large.height()), (240, 240))
+        large_center = large.pixelColor(120, 120)
+        self.assertGreaterEqual(large_center.green(), 120)
+        self.assertLessEqual(max(large_center.red(), large_center.blue()), 5)
+        self.assertEqual(large.pixelColor(120, 0).alpha(), 0)
 
     def test_keep_date_conversion_replaces_thumbnail_in_another_visited_folder(self):
         config = patch.object(file_ops, "CONFIG_FILE", str(self.first.parent / "config.json"))
@@ -190,7 +206,7 @@ class ThumbnailRevisitTests(unittest.TestCase):
         self.decode.reset_mock()
         self.load(self.other)
         self.wait_for_thumbnails(target, kept)
-        self.assertEqual(self.reads(), [(target, self.view.iconSize().width())])
+        self.assertEqual(self.reads(), [(target, CANONICAL_THUMBNAIL_SIZE)])
         self.assertEqual(self.center_color(target).name(), "#ff0000")
 
     @unittest.skipUnless(os.name == "nt", "Windows file dialog path separators")
@@ -210,7 +226,7 @@ class ThumbnailRevisitTests(unittest.TestCase):
         self.assertNotEqual(photo.as_posix(), str(photo))
         self.view.request_thumbnail_refresh(photo.as_posix())
         self.wait_for_thumbnails(photo)
-        self.assertEqual(self.reads(), [(photo, self.view.iconSize().width())])
+        self.assertEqual(self.reads(), [(photo, CANONICAL_THUMBNAIL_SIZE)])
         self.assertEqual(self.center_color(photo).name(), "#0000ff")
 
     def test_refresh_during_a_decode_rejects_the_old_pixels_before_display_or_reuse(self):
@@ -247,7 +263,7 @@ class ThumbnailRevisitTests(unittest.TestCase):
         self.view.thumbnail_model.itemChanged.disconnect(observe_item)
         self.assertNotIn("#ff0000", displayed)
         self.assertEqual(self.center_color(photo).name(), "#0000ff")
-        self.assertEqual(self.reads(), [(photo, self.view.iconSize().width())] * 2)
+        self.assertEqual(self.reads(), [(photo, CANONICAL_THUMBNAIL_SIZE)] * 2)
 
         self.load(self.other)
         self.decode.reset_mock()

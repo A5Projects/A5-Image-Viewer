@@ -6,15 +6,32 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QFontDatabase, QPalette
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QImage, QPainter, QPalette, QStandardItem
 from PyQt6.QtTest import QSignalSpy, QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionViewItem
 
 from ui.main_window import MainWindow
 from ui.settings_dialog import SettingsDialog
-from ui.theme import THEMES, apply_theme
+from ui.theme import THEME_NAMES, THEMES, apply_theme
+from ui.thumbnail_view import ThumbnailView
 from utils import file_ops
+
+
+def _relative_luminance(hex_color):
+    value = hex_color.lstrip("#")
+    channels = [int(value[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    linear = [
+        c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        for c in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast_ratio(foreground, background):
+    l1 = _relative_luminance(foreground)
+    l2 = _relative_luminance(background)
+    return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
 
 
 class AppearanceTests(unittest.TestCase):
@@ -132,6 +149,9 @@ class AppearanceTests(unittest.TestCase):
         self.assertEqual(favorites.item(0).toolTip(), original_paths[0])
 
     def test_theme_setting_persists_and_defaults_safely(self):
+        self.assertEqual(len(THEMES), 10)
+        self.assertEqual(set(THEMES), {name for name, _ in THEME_NAMES})
+        self.assertEqual(set(THEMES), file_ops.VALID_UI_THEMES)
         self.assertEqual(file_ops.get_ui_theme(), "dark")
         for name in THEMES:
             file_ops.set_ui_theme(name)
@@ -142,6 +162,63 @@ class AppearanceTests(unittest.TestCase):
         config["ui_theme"] = "old-or-unknown-theme"
         file_ops.save_config(config)
         self.assertEqual(file_ops.get_ui_theme(), "dark")
+
+    def test_all_themes_meet_contrast_thresholds(self):
+        legacy_themes = {"dark", "medium_dark", "light"}
+        common_pairs = (
+            ("text", "base", 7.0),
+            ("text", "surface", 6.0),
+            ("text", "button", 4.5),
+            ("text", "toolbar", 5.0),
+            ("text", "tooltip", 5.0),
+            ("selection_text", "selection", 4.4),
+            ("selection_text", "selection_inactive", 4.4),
+            ("error", "surface", 3.5),
+        )
+        new_theme_aa_pairs = (
+            ("selection_text", "selection", 4.5),
+            ("selection_text", "selection_inactive", 4.5),
+            ("error", "surface", 4.5),
+        )
+        for name, colors in THEMES.items():
+            for fg, bg, minimum in common_pairs:
+                with self.subTest(theme=name, fg=fg, bg=bg):
+                    self.assertGreaterEqual(_contrast_ratio(colors[fg], colors[bg]), minimum)
+            if name not in legacy_themes:
+                for fg, bg, minimum in new_theme_aa_pairs:
+                    with self.subTest(theme=name, fg=fg, bg=bg):
+                        self.assertGreaterEqual(_contrast_ratio(colors[fg], colors[bg]), minimum)
+
+    def test_thumbnail_selection_fill_follows_active_theme(self):
+        view = ThumbnailView()
+        self.addCleanup(view.close)
+        self.addCleanup(view.shutdown)
+        view.thumbnail_model.appendRow(QStandardItem())
+        index = view.model().index(0, 0)
+
+        def paint_center(theme_name):
+            apply_theme(theme_name)
+            canvas = QImage(120, 120, QImage.Format.Format_ARGB32_Premultiplied)
+            canvas.fill(0)
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, 120, 120)
+            option.state = (
+                QStyle.StateFlag.State_Enabled
+                | QStyle.StateFlag.State_Selected
+                | QStyle.StateFlag.State_Active
+            )
+            painter = QPainter(canvas)
+            view.itemDelegate().paint(painter, option, index)
+            painter.end()
+            return QColor(canvas.pixel(60, 60))
+
+        dark_fill = paint_center("dark")
+        warm_fill = paint_center("warm_charcoal")
+        forest_fill = paint_center("forest")
+        self.assertGreater(dark_fill.blue(), dark_fill.red())
+        self.assertGreater(warm_fill.red(), warm_fill.blue())
+        self.assertGreater(forest_fill.green(), forest_fill.red())
+        self.assertNotEqual(warm_fill.rgb(), dark_fill.rgb())
 
     def test_theme_only_settings_do_not_restart_workers_or_reload_thumbnails(self):
         window = self.make_window()
@@ -164,12 +241,13 @@ class AppearanceTests(unittest.TestCase):
         preview = window.preview_viewer.pixmap_item.pixmap().cacheKey()
         self.assertTrue(cache)
         self.assertGreater(scroll, 0)
+        cycle = [name for name in THEMES if name != "dark"] + ["dark"]
         with (
             patch.object(view, "load_folder") as load_folder,
             patch.object(window, "apply_resource_settings") as resources,
             patch.object(window, "load_prefetched_preview") as preview_load,
         ):
-            for name in ("medium_dark", "light", "dark"):
+            for name in cycle:
                 dialog = SettingsDialog(window)
                 dialog.theme_changed.connect(apply_theme)
                 dialog.resource_settings_changed.connect(window.apply_resource_settings)
