@@ -13,6 +13,7 @@ from PyQt6.QtGui import QShortcut, QStandardItem
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QHeaderView, QMessageBox, QTreeView
 
+from tests.qt_wait import wait_until
 from ui.batch_operations import BatchRenameWorker
 from ui.main_window import MainWindow
 from ui.dialogs import RenameDialog
@@ -485,6 +486,9 @@ class MainWindowBatchIntegrationTests(unittest.TestCase):
                 )
                 window.current_image_path = paths[0]
                 window.current_item_kind = "image"
+
+                # The one-shot move stub bypasses the Windows shell's sharing retries.
+                wait_until(lambda: all(path in window.thumbnail_view.thumbnail_cache for path in paths))
 
                 def move_first(source_paths, destination_folder):
                     os.replace(

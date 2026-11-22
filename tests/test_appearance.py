@@ -11,6 +11,7 @@ from PyQt6.QtGui import QColor, QFont, QFontDatabase, QImage, QPainter, QPalette
 from PyQt6.QtTest import QSignalSpy, QTest
 from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionViewItem
 
+from tests.qt_wait import wait_until
 from ui.main_window import MainWindow
 from ui.settings_dialog import SettingsDialog
 from ui.theme import THEME_NAMES, THEMES, apply_theme
@@ -228,11 +229,11 @@ class AppearanceTests(unittest.TestCase):
             Image.new("RGB", (8, 8), "red").save(path)
             paths.append(path)
         window.current_folder_path = self.temp.name
-        window.thumbnail_view.load_folder(self.temp.name, show_folders=False)
-        QTest.qWait(150)
-        window.select_image_by_path(paths[25])
-        QTest.qWait(30)
         view = window.thumbnail_view
+        view.load_folder(self.temp.name, show_folders=False)
+        wait_until(lambda: all(path in view.thumbnail_cache for path in paths))
+        window.select_image_by_path(paths[25])
+        wait_until(lambda: view.verticalScrollBar().value() > 0)
         view.set_background_activity_paused(True)
         model = view.model()
         cache = dict(view.thumbnail_cache)
