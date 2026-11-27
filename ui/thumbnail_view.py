@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QListView, QStyledItemDelegate, QStyle
 from PyQt6.QtCore import QSize, Qt, QObject, QCoreApplication, QThread, QThreadPool, QRunnable, QTimer, pyqtSignal, pyqtSlot, QMimeData, QUrl, QItemSelection, QItemSelectionModel, QModelIndex
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QImageReader, QImage, QPainter, QColor, QDrag, QPen, QFont, QBrush
 from ui.theme import theme_colors
+from ui.swipe_navigation import SwipeNavigation
 from ui.thumbnail_disk_cache import (
     ThumbnailDiskCache, _matches_tree, _normalize_key, _prefix_range,
 )
@@ -637,6 +638,7 @@ class ThumbnailPool(QThreadPool):
 class ThumbnailView(QListView):
     folder_loaded = pyqtSignal(str, object)
     folder_load_failed = pyqtSignal(str)
+    history_navigation_requested = pyqtSignal(int)
     files_dropped = pyqtSignal(list)
     video_queue_changed = pyqtSignal(int, object)
     video_priority_requested = pyqtSignal(int, object)
@@ -644,6 +646,7 @@ class ThumbnailView(QListView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._swipe_navigation = SwipeNavigation()
         self.gif_playback_enabled = False
         self._painted_gifs = set()
         self._gif_icons = {}
@@ -1657,6 +1660,15 @@ class ThumbnailView(QListView):
                 if current_path in self.thumbnail_cache:
                     self.thumbnail_cache.move_to_end(current_path)
             self.prioritize_rows_around(current.row())
+
+    def wheelEvent(self, event):
+        consumed, direction = self._swipe_navigation.feed(event)
+        if consumed:
+            event.accept()
+            if direction:
+                self.history_navigation_requested.emit(direction)
+            return
+        super().wheelEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Print:

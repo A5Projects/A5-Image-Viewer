@@ -6,8 +6,8 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PyQt6.QtCore import QElapsedTimer, QItemSelectionModel, QPoint, Qt, QTimer
-from PyQt6.QtGui import QImage
+from PyQt6.QtCore import QEvent, QElapsedTimer, QItemSelectionModel, QPoint, Qt, QTimer
+from PyQt6.QtGui import QImage, QShortcut, QKeyEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
@@ -56,6 +56,46 @@ class ViewerWorkflowTests(unittest.TestCase):
         self.window.open_current_thumbnail_fullscreen()
         self.app.processEvents()
         return self.window.fullscreen_viewer
+
+    def test_enter_opening_ignores_duplicate_for_half_second_in_both_modes(self):
+        for mode in ("fullscreen", "windowed"):
+            for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                with self.subTest(mode=mode, key=key):
+                    file_ops.set_viewer_default_mode(mode)
+                    self.window.select_image_by_path(self.paths[0])
+                    shortcut = next(s for s in self.window.thumbnail_view.findChildren(QShortcut)
+                                    if s.key()[0].key() == key)
+                    self.assertFalse(shortcut.autoRepeat())
+                    with patch("ui.fullscreen_viewer.monotonic", return_value=100) as clock:
+                        shortcut.activated.emit()
+                        viewer = self.window.fullscreen_viewer
+                        self.assertTrue(viewer.isVisible())
+                        clock.return_value = 100.49
+                        QTest.keyClick(viewer.viewer, key)
+                        self.assertTrue(viewer.isVisible())
+                        # A held button cannot close the viewer even after the interval.
+                        clock.return_value = 101
+                        repeat = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True)
+                        self.assertTrue(viewer.handle_key_press(repeat))
+                        self.assertTrue(viewer.isVisible())
+                        # Ignored duplicates do not extend the interval.
+                        clock.return_value = 100.5
+                        viewer.next_image()
+                        QTest.keyClick(viewer.viewer, key)
+                        self.assertFalse(viewer.isVisible())
+                        self.assertEqual(self.window.thumbnail_view.currentIndex().data(PATH_ROLE), self.paths[1])
+
+    def test_enter_guard_does_not_delay_escape_or_normal_mouse_opening(self):
+        self.window.select_image_by_path(self.paths[0])
+        with patch("ui.fullscreen_viewer.monotonic", return_value=100):
+            self.window.open_current_thumbnail_fullscreen(from_enter=True)
+            QTest.keyClick(self.window.fullscreen_viewer.viewer, Qt.Key.Key_Escape)
+            self.assertFalse(self.window.fullscreen_viewer.isVisible())
+        # Even an immediate mouse reopening is not armed with another guard.
+        with patch("ui.fullscreen_viewer.monotonic", return_value=100.1):
+            self.window.open_thumbnail_fullscreen(self.window.thumbnail_view.currentIndex())
+            QTest.keyClick(self.window.fullscreen_viewer.viewer, Qt.Key.Key_Return)
+            self.assertFalse(self.window.fullscreen_viewer.isVisible())
 
     def test_gif_playback_settings_apply_to_current_selection_and_prefetched_images(self):
         path = os.path.join(self.folder, "animated.GIF")

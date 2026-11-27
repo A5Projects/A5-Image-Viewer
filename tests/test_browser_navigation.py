@@ -72,6 +72,40 @@ class BrowserNavigationTests(unittest.TestCase):
             QTest.qWait(10)
         self.assertTrue(condition())
 
+    def test_swipe_navigation_is_scoped_to_thumbnail_view(self):
+        from tests.test_swipe_navigation import wheel
+        with patch.object(self.window, "go_back_folder") as back, patch.object(self.window, "go_forward_folder") as forward:
+            for phase, x in ((Qt.ScrollPhase.ScrollBegin, 0), (Qt.ScrollPhase.ScrollUpdate, 100),
+                             (Qt.ScrollPhase.ScrollUpdate, 200), (Qt.ScrollPhase.ScrollEnd, 0)):
+                self.app.sendEvent(self.view.viewport(), wheel(x, phase=phase))
+            back.assert_called_once()
+            self.app.sendEvent(self.view.viewport(), wheel(phase=Qt.ScrollPhase.ScrollBegin))
+            self.app.sendEvent(self.view.viewport(), wheel(-100, phase=Qt.ScrollPhase.ScrollUpdate))
+            forward.assert_called_once()
+            self.app.sendEvent(self.window.tree_view.viewport(), wheel(100))
+            back.assert_called_once()
+
+    def test_vertical_wheel_still_scrolls_thumbnail_view(self):
+        from tests.test_swipe_navigation import wheel
+        self.add_names([f"image-{i}.png" for i in range(100)])
+        self.view.doItemsLayout()
+        with patch.object(self.window, "go_back_folder") as back, patch.object(self.window, "go_forward_folder") as forward:
+            self.app.sendEvent(self.view.viewport(), wheel(0, -120, pixels=False))
+            self.assertGreater(self.view.verticalScrollBar().value(), 0)
+            back.assert_not_called()
+            forward.assert_not_called()
+
+    def test_dedicated_history_keys(self):
+        back = self.shortcut_spy("Back")
+        forward = self.shortcut_spy("Forward")
+        QTest.keyClick(self.view, Qt.Key.Key_Back)
+        QTest.keyClick(self.view, Qt.Key.Key_Forward)
+        self.assertEqual(back.call_count, 1)
+        self.assertEqual(forward.call_count, 1)
+        for shortcut in self.window.findChildren(QShortcut):
+            if shortcut.key().toString() in ("Back", "Forward"):
+                self.assertFalse(shortcut.autoRepeat())
+
     def test_switching_folders_with_active_decoders_keeps_current_images(self):
         self.view.selectionModel().currentChanged.connect(self.window.on_thumbnail_selected)
         folders = []

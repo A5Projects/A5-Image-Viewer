@@ -351,3 +351,14 @@ Copyright (C) 2026 A5Projects.
 Licensed under the GNU General Public License version 3. This keeps distributed
 versions of the application and their source available under the same terms as
 the GPL edition of PyQt6. See [LICENSE](LICENSE).
+
+### Touchpad folder navigation
+
+A deliberate two-finger horizontal swipe over the thumbnail area navigates folder
+history once per swipe. Vertical scrolling remains unchanged. Dedicated keyboard
+Back/Forward keys also navigate history, alongside Alt+Left/Right and mouse buttons.
+Swipe direction follows the system scrolling direction. Folder-tree scrolling,
+text fields and image panning retain their existing behaviour.
+
+Opening image view with Enter ignores duplicate Enter presses for half a second.
+This also covers keypad Enter and mouse buttons mapped to Enter; Escape remains immediate.

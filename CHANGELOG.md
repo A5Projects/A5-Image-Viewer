@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-27 — v1.0.0-20261127
+
+- Added horizontal two-finger swipe Back/Forward navigation over thumbnails,
+  with a threshold and one navigation per gesture, preserving vertical scrolling.
+- Added dedicated Back/Forward keyboard keys for folder history.
+- Opening image view with Enter now ignores duplicate Enter presses for half a
+  second, preventing mouse-button bounce from immediately closing it again.
+
 ## 2026-11-22 — v1.0.0-20261122
 
 - Unchanged image thumbnails can now be reused after restarting A5. The disk

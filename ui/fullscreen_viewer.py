@@ -1,5 +1,6 @@
 import os
 import random
+from time import monotonic
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QMenu, QApplication, QLabel, QGraphicsView
 )
@@ -227,6 +228,7 @@ class FullScreenViewer(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._enter_blocked_until = 0.0
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.display_mode = "fullscreen"
         self.window_state = get_viewer_state()
@@ -495,6 +497,8 @@ class FullScreenViewer(QDialog):
         self.update_hud_from_pixmap(pixmap)
 
     def load_image(self, file_path, prefetched_image=None):
+        if not self.isVisible():
+            self._enter_blocked_until = 0.0
         self.set_current_image_path(file_path)
         if prefetched_image is not None and not prefetched_image.isNull():
             pixmap = QPixmap.fromImage(prefetched_image)
@@ -592,6 +596,10 @@ class FullScreenViewer(QDialog):
             return
         self.viewer.keyPressEvent(event)
 
+    def guard_duplicate_enter(self):
+        # Start after the image opens, so slow decoding does not use up the guard.
+        self._enter_blocked_until = monotonic() + 0.5
+
     def handle_key_press(self, event):
         key = event.key()
         if key == Qt.Key.Key_F11:
@@ -618,6 +626,8 @@ class FullScreenViewer(QDialog):
             self.close()
             return True
         if key in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
+            if event.isAutoRepeat() or monotonic() < self._enter_blocked_until:
+                return True
             self.close()
             return True
         if ctrl and key == Qt.Key.Key_Home:

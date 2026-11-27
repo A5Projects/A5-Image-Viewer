@@ -90,7 +90,7 @@ fullscreen. Passing a folder opens the browser at that folder.
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The current suite contains 245 tests. Test modules set
+The current suite contains 352 tests. Test modules set
 `QT_QPA_PLATFORM=offscreen` where GUI construction is needed. Tests that write
 configuration should redirect `utils.file_ops.CONFIG_FILE` to a temporary
 directory and restore it during teardown. Never intentionally run a settings
@@ -1083,3 +1083,25 @@ Before considering a change complete:
 The best default is a small, tested change that follows an existing ownership
 boundary. Responsiveness and predictable file behavior matter more here than a
 larger abstraction or a longer feature list.
+
+### Thumbnail touchpad navigation (November 27, 2026)
+
+`ThumbnailView.wheelEvent` delegates to `SwipeNavigation` and emits a direction
+signal connected to existing folder-history commands. Only the thumbnail viewport
+interprets horizontal wheel input. The recognizer requires horizontal dominance
+and 80 pixel units (or 120 angle units for drivers without pixel deltas). Vertical
+intent locks navigation out for the gesture; modified wheel events pass through.
+It latches after firing, ignores momentum as a navigation trigger and uses Qt
+scroll phases where available. Phase-less Windows drivers use a 350 ms idle gap;
+those drivers cannot supply exact physical finger-lift boundaries. The latch
+survives folder loading. Dedicated Qt Back/Forward shortcuts are browser-window
+scoped with auto-repeat disabled. There is no change to thumbnail cache/workers.
+Tests cover direction, thresholds, phases, fallback timing, momentum, modifiers,
+vertical scrolling and viewport scope. A physical laptop check is still needed
+for driver-specific sensitivity and direction.
+
+Enter opening uses `open_current_thumbnail_fullscreen(from_enter=True)` to arm a
+500 ms monotonic guard after loading. Both Enter shortcuts disable auto-repeat;
+the viewer also consumes repeated key events. Only Enter closing is guarded;
+Escape, title-bar close and double-click retain their existing behaviour. A fresh
+viewer opening clears the previous guard, while image navigation does not.

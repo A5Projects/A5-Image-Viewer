@@ -736,11 +736,13 @@ class MainWindow(QMainWindow):
 
         shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self.thumbnail_view)
         shortcut_enter.setContext(Qt.ShortcutContext.WidgetShortcut)
-        shortcut_enter.activated.connect(self.open_current_thumbnail_fullscreen)
+        shortcut_enter.setAutoRepeat(False)
+        shortcut_enter.activated.connect(lambda: self.open_current_thumbnail_fullscreen(from_enter=True))
 
         shortcut_keypad_enter = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.thumbnail_view)
         shortcut_keypad_enter.setContext(Qt.ShortcutContext.WidgetShortcut)
-        shortcut_keypad_enter.activated.connect(self.open_current_thumbnail_fullscreen)
+        shortcut_keypad_enter.setAutoRepeat(False)
+        shortcut_keypad_enter.activated.connect(lambda: self.open_current_thumbnail_fullscreen(from_enter=True))
 
         shortcut_delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.thumbnail_view)
         shortcut_delete.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -765,6 +767,15 @@ class MainWindow(QMainWindow):
         shortcut_alt_right = QShortcut(QKeySequence("Alt+Right"), self)
         shortcut_alt_right.setContext(Qt.ShortcutContext.WindowShortcut)
         shortcut_alt_right.activated.connect(self.go_forward_folder)
+
+        self.thumbnail_view.history_navigation_requested.connect(
+            lambda direction: self.go_back_folder() if direction < 0 else self.go_forward_folder())
+        for key, callback in ((Qt.Key.Key_Back, self.go_back_folder),
+                              (Qt.Key.Key_Forward, self.go_forward_folder)):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(callback)
 
         self.thumbnail_view.installEventFilter(self)
         self.thumbnail_view.viewport().installEventFilter(self)
@@ -1960,8 +1971,10 @@ class MainWindow(QMainWindow):
         self.modified_pixmap = None
         self.update_status_bar()
         
-    def open_current_thumbnail_fullscreen(self):
+    def open_current_thumbnail_fullscreen(self, *, from_enter=False):
         self.open_thumbnail_fullscreen(self.thumbnail_view.currentIndex())
+        if from_enter and self.fullscreen_viewer.isVisible():
+            self.fullscreen_viewer.guard_duplicate_enter()
 
     def open_thumbnail_fullscreen(self, index):
         if not index.isValid() or self.thumbnail_view.isRowHidden(index.row()):
